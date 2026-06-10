@@ -1,0 +1,22 @@
+FROM kong:3.4
+
+# Instalar herramientas de PostgreSQL para el script de entrypoint
+USER root
+RUN apt-get update && apt-get install -y postgresql-client && rm -rf /var/lib/apt/lists/*
+
+# Copiar plugins personalizados
+COPY plugins/ /usr/local/share/lua/5.1/kong/plugins/
+
+# Configurar variables de entorno para plugins
+ENV KONG_PLUGINS=bundled,feature-flags
+ENV KONG_LUA_PACKAGE_PATH=/usr/local/share/lua/5.1/?.lua;;
+
+# Copiar configuración
+COPY kong.yml /etc/kong/kong.yml
+COPY docker/entrypoint.sh /entrypoint.sh
+
+RUN chmod +x /entrypoint.sh
+
+USER kong
+
+ENTRYPOINT ["/entrypoint.sh"] 

@@ -1,0 +1,14 @@
+# Kong config para K8s - Solo IAM (hito mínimo)
+# Hostname: iam-service (Service name en default namespace)
+
+_format_version: "3.0"
+_transform: true
+
+services:
+  - name: iam-service
+    url: http://iam-service:8080
+    routes:
+      - name: iam-route
+        paths:
+          - /iam/
+        strip_path: true

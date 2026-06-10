@@ -1,0 +1,1067 @@
+_format_version: "3.0"
+_transform: true
+
+services:
+  # Servicio IAM
+  - name: iam-service
+    url: http://mc-iam-service:8080
+    routes:
+      - name: iam-route
+        paths:
+          - /iam/
+        strip_path: true
+
+  # Servicio PIM
+  - name: pim-service
+    url: http://mc-pim-service:8080
+    connect_timeout: 60000
+    write_timeout: 60000
+    read_timeout: 60000
+    routes:
+      - name: pim-route
+        paths:
+          - /pim/
+        strip_path: true
+
+  # Servicio PIM S2S (comunicación interna, API-Key auth, sin JWT)
+  - name: pim-s2s-service
+    url: http://mc-pim-service:8080/api/v1/s2s
+    connect_timeout: 60000
+    write_timeout: 60000
+    read_timeout: 60000
+    routes:
+      - name: pim-s2s-route
+        paths:
+          - /pim/api/v1/s2s/
+        strip_path: true
+        methods:
+          - POST
+          - GET
+        plugins:
+          - name: key-auth
+            config:
+              key_names:
+                - X-API-Key
+              hide_credentials: true
+          - name: acl
+            config:
+              allow:
+                - "service-internal"
+              hide_groups_header: true
+
+  # Servicio Stock
+  - name: stock-service
+    url: http://mc-stock-service:8080
+    routes:
+      - name: stock-route
+        paths:
+          - /stock/
+        strip_path: true
+
+  # Servicio Catalog BFF (HITO 1 - Orquestación)
+  - name: catalog-bff-service
+    url: http://mc-catalog-bff-service:8085
+    routes:
+      - name: catalog-route
+        paths:
+          - /catalog/
+        strip_path: true
+
+  # Servicio Sales - HITO v0.5 (HTTP Routes Alignment)
+  - name: sales-service
+    url: http://sales-service:8080
+    routes:
+      - name: sales-route
+        paths:
+          - /sales/
+        strip_path: true
+
+  # Customer Service (POS-SALE-02)
+  - name: customer-service
+    url: http://mc-customer-service:8080
+    routes:
+      - name: customer-route
+        paths:
+          - /customers/
+        strip_path: true
+
+  # Payment Method Service (POS-SALE-02)
+  - name: payment-method-service
+    url: http://mc-payment-method-service:8080
+    routes:
+      - name: payment-method-route
+        paths:
+          - /payment-methods/
+        strip_path: true
+
+  # Servicio Marketplace (funcionalidad dentro del PIM)
+  - name: marketplace-service
+    url: http://mc-pim-service:8080/api/v1
+    routes:
+      - name: marketplace-route
+        paths:
+          - /marketplace/
+        strip_path: false
+  # Servicio Onboarding
+  - name: onboarding-service
+    url: http://mc-onboarding-service:8110/api/v1/onboarding
+    routes:
+      - name: onboarding-route
+        paths:
+          - /onboarding/api/v1/
+        strip_path: true
+
+  # Servicio Notification
+  - name: notification-service
+    url: http://mc-notification-service:8282
+    routes:
+      - name: notification-route
+        paths:
+          - /notification/
+        strip_path: true
+
+  # Servicio Tenant (Configuración por Tenant)
+  - name: tenant-service
+    url: http://mc-tenant-service:8120
+    connect_timeout: 60000
+    write_timeout: 60000
+    read_timeout: 60000
+    routes:
+      - name: tenant-route
+        paths:
+          - /tenant
+        strip_path: true
+      # Ruta específica para bootstrap (solo servicios internos)
+      - name: tenant-bootstrap-route
+        paths:
+          - /tenant/api/v1/tenant/bootstrap
+        strip_path: false
+        methods:
+          - POST
+        plugins:
+          - name: acl
+            config:
+              allow:
+                - "service-internal"
+              hide_groups_header: true
+
+  # Frontend CRM
+  - name: crm-frontend
+    url: http://frontend-activo-crm:3000
+    routes:
+      - name: crm-frontend-route
+        paths:
+          - /crm/
+        strip_path: true
+  
+  # AI Gateway Service (Autenticación flexible: JWT o API Key)
+  - name: ai-gateway-service
+    url: http://mc-commerce-ai-service:8000
+    connect_timeout: 60000
+    write_timeout: 120000
+    read_timeout: 120000
+    retries: 3
+    routes:
+      - name: ai-gateway-route
+        paths:
+          - /ai-gateway/
+          - /ai/
+        strip_path: true
+        protocols:
+          - http
+          - https
+        preserve_host: false
+        plugins:
+          - name: key-auth
+            config:
+              key_names:
+                - X-API-Key
+                - apiKey
+              key_in_header: true
+              key_in_query: false
+              hide_credentials: false
+              anonymous: "anonymous-consumer"
+          - name: request-transformer
+            config:
+              add:
+                headers:
+                  - "X-Kong-Route:ai-gateway"
+                  - "X-Service-Name:ai-gateway"
+
+  # Sales Agent — ruta pública (prospectos sin cuenta)
+  # IMPORTANTE: debe declararse ANTES de ai-gateway-route para que Kong
+  # aplique primero esta ruta más específica.
+  - name: ai-sales-public-service
+    url: http://mc-commerce-ai-service:8000
+    connect_timeout: 60000
+    write_timeout: 120000
+    read_timeout: 120000
+    routes:
+      - name: ai-sales-chat-public-route
+        paths:
+          - /ai/sales/chat
+          - /ai/sales/health
+        strip_path: false
+        protocols:
+          - http
+          - https
+        plugins:
+          - name: request-transformer
+            config:
+              add:
+                headers:
+                  - "X-Kong-Route:ai-sales-public"
+                  - "X-Service-Name:ai-gateway"
+
+  # Frontend Backoffice
+  - name: backoffice-frontend
+    url: http://mc-backoffice:3000
+    routes:
+      - name: backoffice-frontend-route
+        paths:
+          - /backoffice/
+        strip_path: true
+
+  # AI Gateway -> PIM Service (ruta dedicada)
+  - name: ai-gateway-pim-service
+    url: http://mc-pim-service:8080
+    connect_timeout: 60000
+    write_timeout: 60000
+    read_timeout: 60000
+    routes:
+      - name: ai-gateway-pim-route
+        paths:
+          - /ai-gateway/pim/
+        strip_path: true
+
+  # Webdata Service (Web Data Layer - Firecrawl)
+  - name: webdata-service
+    url: http://mc-webdata-service:8150
+    connect_timeout: 60000
+    write_timeout: 120000
+    read_timeout: 120000
+    routes:
+      - name: webdata-route
+        paths:
+          - /webdata/
+        strip_path: true
+
+  # =========================================================================
+  # RUTAS INTERNAS S2S (Service-to-Service) — Autenticación por API Key
+  # =========================================================================
+
+  # S2S: Stock Service (interno)
+  - name: internal-stock-service
+    url: http://mc-stock-service:8080
+    routes:
+      - name: internal-stock-route
+        paths:
+          - /internal/stock/
+        strip_path: true
+
+  # S2S: PIM Service (interno)
+  - name: internal-pim-service
+    url: http://mc-pim-service:8080
+    connect_timeout: 60000
+    write_timeout: 60000
+    read_timeout: 60000
+    routes:
+      - name: internal-pim-route
+        paths:
+          - /internal/pim/
+        strip_path: true
+
+  # S2S: Customer Service (interno)
+  - name: internal-customer-service
+    url: http://mc-customer-service:8080
+    routes:
+      - name: internal-customer-route
+        paths:
+          - /internal/customers/
+        strip_path: true
+
+  # S2S: Tenant Service (interno)
+  - name: internal-tenant-service
+    url: http://mc-tenant-service:8120
+    connect_timeout: 60000
+    write_timeout: 60000
+    read_timeout: 60000
+    routes:
+      - name: internal-tenant-route
+        paths:
+          - /internal/tenant/
+        strip_path: true
+
+  # S2S: IAM Service (interno)
+  - name: internal-iam-service
+    url: http://mc-iam-service:8080
+    routes:
+      - name: internal-iam-route
+        paths:
+          - /internal/iam/
+        strip_path: true
+
+  # S2S: Notification Service (interno)
+  - name: internal-notification-service
+    url: http://mc-notification-service:8282
+    routes:
+      - name: internal-notification-route
+        paths:
+          - /internal/notification/
+        strip_path: true
+
+consumers:
+  # Consumer para JWT autenticado
+  - username: iam-service-consumer
+    jwt_secrets:
+      - key: "iam-service"
+        algorithm: "HS256"
+        secret: "${JWT_SECRET}"
+    acls:
+      - group: "authenticated"
+
+  # Consumer anónimo para rutas públicas
+  - username: anonymous-consumer
+    acls:
+      - group: "public-routes"
+
+  # Consumer para AI Gateway con API Key (comunicación interna y ACL)
+  - username: ai-gateway-consumer
+    custom_id: ai-gateway
+    keyauth_credentials:
+      - key: "${AI_GATEWAY_API_KEY}"
+    acls:
+      - group: "ai-gateway-access"
+      - group: "authenticated"
+  
+  # Consumer para Marketplace Admin (operaciones globales)
+  - username: marketplace-admin-consumer
+    keyauth_credentials:
+      - key: "${MARKETPLACE_ADMIN_API_KEY}"
+    acls:
+      - group: "marketplace-admin"
+      - group: "authenticated"
+
+  # Consumer para Onboarding Service (comunicación interna S2S)
+  - username: onboarding-service-consumer
+    custom_id: onboarding-service
+    keyauth_credentials:
+      - key: "${ONBOARDING_SERVICE_API_KEY}"
+    acls:
+      - group: "service-internal"
+      - group: "authenticated"
+
+  # Consumer para Sales Service (comunicación interna S2S)
+  - username: sales-service-consumer
+    custom_id: sales-service
+    keyauth_credentials:
+      - key: "${SALES_SERVICE_API_KEY}"
+    acls:
+      - group: "service-internal"
+      - group: "authenticated"
+
+  # Consumer para Catalog BFF Service (comunicación interna S2S)
+  - username: catalog-bff-consumer
+    custom_id: catalog-bff-service
+    keyauth_credentials:
+      - key: "${CATALOG_BFF_API_KEY}"
+    acls:
+      - group: "service-internal"
+      - group: "authenticated"
+
+  # Consumer para PIM S2S (refresh template products, comunicación interna)
+  - username: pim-s2s-consumer
+    custom_id: pim-s2s
+    keyauth_credentials:
+      - key: "${PIM_S2S_API_KEY}"
+    acls:
+      - group: "service-internal"
+
+plugins:
+  # Plugin global de CORS
+  - name: cors
+    config:
+      origins:
+        __CORS_ORIGINS_PLACEHOLDER__
+      methods:
+        - GET
+        - POST
+        - PUT
+        - PATCH
+        - DELETE
+        - OPTIONS
+      headers:
+        - Authorization
+        - Content-Type
+        - X-Tenant-ID
+        - X-Refresh-Token
+        - X-User-Role
+        - X-Request-ID
+      exposed_headers:
+        - X-Auth-Token
+        - X-Request-ID
+        - X-LLM-Cost
+        - X-LLM-Input-Tokens
+        - X-LLM-Output-Tokens
+      credentials: true
+      max_age: 3600
+
+  # Plugin global de Request Size Limiting (5MB default, servicios específicos lo sobreescriben)
+  - name: request-size-limiting
+    config:
+      allowed_payload_size: 5
+
+  # Plugin JWT para autenticación
+  - name: jwt
+    service: iam-service
+    config:
+      header_names:
+        - Authorization
+      claims_to_verify:
+        - exp
+      key_claim_name: iss
+      secret_is_base64: false
+      run_on_preflight: false
+      uri_param_names:
+        - jwt
+      anonymous: "anonymous-consumer"
+
+  # Plugin JWT para el servicio PIM
+  - name: jwt
+    service: pim-service
+    config:
+      header_names:
+        - Authorization
+      claims_to_verify:
+        - exp
+      key_claim_name: iss
+      secret_is_base64: false
+      run_on_preflight: false
+      uri_param_names:
+        - jwt
+      anonymous: "anonymous-consumer"
+
+  # Plugin JWT para el servicio Stock
+  - name: jwt
+    service: stock-service
+    config:
+      header_names:
+        - Authorization
+      claims_to_verify:
+        - exp
+      key_claim_name: iss
+      secret_is_base64: false
+      run_on_preflight: false
+      uri_param_names:
+        - jwt
+      anonymous: "anonymous-consumer"
+
+  # Plugin JWT para el servicio Catalog BFF
+  - name: jwt
+    service: catalog-bff-service
+    config:
+      header_names:
+        - Authorization
+      claims_to_verify:
+        - exp
+      key_claim_name: iss
+      secret_is_base64: false
+      run_on_preflight: false
+      uri_param_names:
+        - jwt
+      anonymous: "anonymous-consumer"
+
+  # Plugin JWT para el servicio Order - HITO 3.0
+  - name: jwt
+    service: sales-service
+    config:
+      header_names:
+        - Authorization
+      claims_to_verify:
+        - exp
+      key_claim_name: iss
+      secret_is_base64: false
+      run_on_preflight: false
+      uri_param_names:
+        - jwt
+      anonymous: "anonymous-consumer"
+
+  # Plugin JWT para Customer Service
+  - name: jwt
+    service: customer-service
+    config:
+      header_names:
+        - Authorization
+      claims_to_verify:
+        - exp
+      key_claim_name: iss
+      secret_is_base64: false
+      run_on_preflight: false
+      uri_param_names:
+        - jwt
+      anonymous: "anonymous-consumer"
+
+  # Plugin JWT para Payment Method Service
+  - name: jwt
+    service: payment-method-service
+    config:
+      header_names:
+        - Authorization
+      claims_to_verify:
+        - exp
+      key_claim_name: iss
+      secret_is_base64: false
+      run_on_preflight: false
+      uri_param_names:
+        - jwt
+      anonymous: "anonymous-consumer"
+
+  # Plugin JWT para el servicio Marketplace
+  - name: jwt
+    service: marketplace-service
+    config:
+      header_names:
+        - Authorization
+      claims_to_verify:
+        - exp
+      key_claim_name: iss
+      secret_is_base64: false
+      run_on_preflight: false
+      uri_param_names:
+        - jwt
+      anonymous: "anonymous-consumer"
+
+  # Plugin JWT para el servicio Onboarding (público - no requiere autenticación)
+  - name: jwt
+    service: onboarding-service
+    config:
+      header_names:
+        - Authorization
+      claims_to_verify:
+        - exp
+      key_claim_name: iss
+      secret_is_base64: false
+      run_on_preflight: false
+      uri_param_names:
+        - jwt
+      anonymous: "anonymous-consumer"
+
+  # Plugin JWT para AI Gateway
+  - name: jwt
+    service: ai-gateway-service
+    config:
+      header_names:
+        - Authorization
+      claims_to_verify:
+        - exp
+      key_claim_name: iss
+      secret_is_base64: false
+      run_on_preflight: false
+      uri_param_names:
+        - jwt
+      anonymous: "anonymous-consumer"
+  
+  # Plugin JWT para Webdata Service
+  - name: jwt
+    service: webdata-service
+    config:
+      header_names:
+        - Authorization
+      claims_to_verify:
+        - exp
+      key_claim_name: iss
+      secret_is_base64: false
+      run_on_preflight: false
+      uri_param_names:
+        - jwt
+      anonymous: "anonymous-consumer"
+
+  # Plugin JWT para el servicio Notification
+  - name: jwt
+    service: notification-service
+    config:
+      header_names:
+        - Authorization
+      claims_to_verify:
+        - exp
+      key_claim_name: iss
+      secret_is_base64: false
+      run_on_preflight: false
+      uri_param_names:
+        - jwt
+      anonymous: "anonymous-consumer"
+
+  # Plugin JWT para el servicio Tenant
+  - name: jwt
+    service: tenant-service
+    config:
+      header_names:
+        - Authorization
+      claims_to_verify:
+        - exp
+      key_claim_name: iss
+      secret_is_base64: false
+      run_on_preflight: false
+      uri_param_names:
+        - jwt
+      anonymous: "anonymous-consumer"
+
+  # Plugin ACL para control de acceso
+  - name: acl
+    service: iam-service
+    config:
+      allow:
+        - "public-routes"
+        - "authenticated"
+      hide_groups_header: true
+
+  # Plugin ACL para el servicio PIM
+  - name: acl
+    service: pim-service
+    config:
+      allow:
+        - "authenticated"
+        - "public-routes"
+      hide_groups_header: true
+
+  # Plugin ACL para el servicio Stock
+  - name: acl
+    service: stock-service
+    config:
+      allow:
+        - "authenticated"
+        - "public-routes"
+      hide_groups_header: true
+
+  # Plugin ACL para el servicio Catalog BFF
+  - name: acl
+    service: catalog-bff-service
+    config:
+      allow:
+        - "authenticated"
+        - "public-routes"
+      hide_groups_header: true
+
+  # Plugin ACL para el servicio Order - HITO 3.0
+  - name: acl
+    service: sales-service
+    config:
+      allow:
+        - "authenticated"
+        - "public-routes"
+      hide_groups_header: true
+
+  # Plugin ACL para Customer Service
+  - name: acl
+    service: customer-service
+    config:
+      allow:
+        - "authenticated"
+        - "public-routes"
+      hide_groups_header: true
+
+  # Plugin ACL para Payment Method Service
+  - name: acl
+    service: payment-method-service
+    config:
+      allow:
+        - "authenticated"
+        - "public-routes"
+      hide_groups_header: true
+
+  # Plugin ACL para el servicio Marketplace
+  - name: acl
+    service: marketplace-service
+    config:
+      allow:
+        - "authenticated" 
+        - "public-routes"
+      hide_groups_header: true
+
+  # Plugin ACL para AI Gateway
+  - name: acl
+    service: ai-gateway-service
+    config:
+      allow:
+        - "authenticated"
+        - "public-routes"
+      hide_groups_header: true
+  
+  # Plugin ACL para Webdata Service
+  - name: acl
+    service: webdata-service
+    config:
+      allow:
+        - "public-routes"
+        - "authenticated"
+      hide_groups_header: true
+
+  # Plugin ACL para el servicio Onboarding (público)
+  - name: acl
+    service: onboarding-service
+    config:
+      allow:
+        - "public-routes"
+        - "authenticated"
+      hide_groups_header: true
+
+  # Plugin ACL para el servicio Notification
+  - name: acl
+    service: notification-service
+    config:
+      allow:
+        - "authenticated"
+        - "public-routes"
+      hide_groups_header: true
+
+  # Plugin ACL para el servicio Tenant
+  - name: acl
+    service: tenant-service
+    config:
+      allow:
+        - "authenticated"
+        - "public-routes"
+      hide_groups_header: true
+
+  # Plugin Rate Limiting para IAM (endpoints generales)
+  - name: rate-limiting
+    service: iam-service
+    config:
+      minute: 60
+      hour: 1000
+      policy: local
+
+  # Plugin Rate Limiting para PIM
+  - name: rate-limiting
+    service: pim-service
+    config:
+      minute: 600
+      hour: 10000
+      policy: local
+
+  # Plugin Request Size Limiting para PIM (permite archivos CSV grandes)
+  - name: request-size-limiting
+    service: pim-service
+    config:
+      allowed_payload_size: 10
+
+  # Plugin Rate Limiting para Stock
+  - name: rate-limiting
+    service: stock-service
+    config:
+      minute: 60
+      hour: 1000
+      policy: local
+
+  # Plugin Rate Limiting para Catalog BFF
+  - name: rate-limiting
+    service: catalog-bff-service
+    config:
+      minute: 60
+      hour: 1000
+      policy: local
+
+  # Plugin Rate Limiting para Order - HITO 3.0
+  - name: rate-limiting
+    service: sales-service
+    config:
+      minute: 60
+      hour: 1000
+      policy: local
+
+  # Plugin Rate Limiting para Customer Service
+  - name: rate-limiting
+    service: customer-service
+    config:
+      minute: 60
+      hour: 1000
+      policy: local
+
+  # Plugin Rate Limiting para Payment Method Service
+  - name: rate-limiting
+    service: payment-method-service
+    config:
+      minute: 60
+      hour: 1000
+      policy: local
+
+  # Plugin Rate Limiting para Marketplace
+  - name: rate-limiting
+    service: marketplace-service
+    config:
+      minute: 60
+      hour: 1000
+      policy: local
+
+  # Plugin Rate Limiting para AI Gateway (más restrictivo por costos de AI)
+  - name: rate-limiting
+    service: ai-gateway-service
+    config:
+      minute: 100
+      hour: 1000
+      policy: local
+  
+  # Plugin Rate Limiting para Webdata Service
+  - name: rate-limiting
+    service: webdata-service
+    config:
+      minute: 200
+      hour: 2000
+      policy: local
+
+  # Plugin Rate Limiting para Onboarding
+  - name: rate-limiting
+    service: onboarding-service
+    config:
+      minute: 100
+      hour: 2000
+      policy: local
+
+  # Plugin Rate Limiting para Notification
+  - name: rate-limiting
+    service: notification-service
+    config:
+      minute: 60
+      hour: 1000
+      policy: local
+
+  # Plugin Rate Limiting para Tenant
+  - name: rate-limiting
+    service: tenant-service
+    config:
+      minute: 100
+      hour: 2000
+      policy: local
+
+  # Plugin Key Auth para AI Gateway -> PIM
+  - name: key-auth
+    service: ai-gateway-pim-service
+    config:
+      key_names:
+        - apikey
+        - X-API-Key
+      hide_credentials: true
+
+  # Plugin ACL para AI Gateway -> PIM
+  - name: acl
+    service: ai-gateway-pim-service
+    config:
+      allow:
+        - "ai-gateway-access"
+      hide_groups_header: true
+
+  # Plugin Rate Limiting para AI Gateway -> PIM (más permisivo)
+  - name: rate-limiting
+    service: ai-gateway-pim-service
+    config:
+      minute: 300
+      hour: 3000
+      policy: local
+
+  # Plugin Request Size Limiting para AI Gateway -> PIM (para batch operations)
+  - name: request-size-limiting
+    service: ai-gateway-pim-service
+    config:
+      allowed_payload_size: 50
+
+  # =========================================================================
+  # PLUGINS S2S — Rutas internas (key-auth + ACL + rate-limiting)
+  # =========================================================================
+
+  # Key Auth para rutas internas S2S
+  - name: key-auth
+    service: internal-stock-service
+    config:
+      key_names:
+        - X-API-Key
+      key_in_header: true
+      key_in_query: false
+      hide_credentials: true
+
+  - name: key-auth
+    service: internal-pim-service
+    config:
+      key_names:
+        - X-API-Key
+      key_in_header: true
+      key_in_query: false
+      hide_credentials: true
+
+  - name: key-auth
+    service: internal-customer-service
+    config:
+      key_names:
+        - X-API-Key
+      key_in_header: true
+      key_in_query: false
+      hide_credentials: true
+
+  - name: key-auth
+    service: internal-tenant-service
+    config:
+      key_names:
+        - X-API-Key
+      key_in_header: true
+      key_in_query: false
+      hide_credentials: true
+
+  - name: key-auth
+    service: internal-iam-service
+    config:
+      key_names:
+        - X-API-Key
+      key_in_header: true
+      key_in_query: false
+      hide_credentials: true
+
+  - name: key-auth
+    service: internal-notification-service
+    config:
+      key_names:
+        - X-API-Key
+      key_in_header: true
+      key_in_query: false
+      hide_credentials: true
+
+  # ACL para rutas internas S2S (solo service-internal)
+  - name: acl
+    service: internal-stock-service
+    config:
+      allow:
+        - "service-internal"
+      hide_groups_header: true
+
+  - name: acl
+    service: internal-pim-service
+    config:
+      allow:
+        - "service-internal"
+      hide_groups_header: true
+
+  - name: acl
+    service: internal-customer-service
+    config:
+      allow:
+        - "service-internal"
+      hide_groups_header: true
+
+  - name: acl
+    service: internal-tenant-service
+    config:
+      allow:
+        - "service-internal"
+      hide_groups_header: true
+
+  - name: acl
+    service: internal-iam-service
+    config:
+      allow:
+        - "service-internal"
+      hide_groups_header: true
+
+  - name: acl
+    service: internal-notification-service
+    config:
+      allow:
+        - "service-internal"
+      hide_groups_header: true
+
+  # Rate Limiting para rutas internas S2S (más permisivo)
+  - name: rate-limiting
+    service: internal-stock-service
+    config:
+      minute: 1000
+      hour: 20000
+      policy: local
+
+  - name: rate-limiting
+    service: internal-pim-service
+    config:
+      minute: 1000
+      hour: 20000
+      policy: local
+
+  - name: rate-limiting
+    service: internal-customer-service
+    config:
+      minute: 1000
+      hour: 20000
+      policy: local
+
+  - name: rate-limiting
+    service: internal-tenant-service
+    config:
+      minute: 1000
+      hour: 20000
+      policy: local
+
+  - name: rate-limiting
+    service: internal-iam-service
+    config:
+      minute: 1000
+      hour: 20000
+      policy: local
+
+  - name: rate-limiting
+    service: internal-notification-service
+    config:
+      minute: 1000
+      hour: 20000
+      policy: local
+
+  # Request Transformer para rutas internas S2S (inyectar headers de trazabilidad)
+  - name: request-transformer
+    service: internal-stock-service
+    config:
+      add:
+        headers:
+          - "X-Kong-Route:internal"
+          - "X-Service-Origin:s2s"
+
+  - name: request-transformer
+    service: internal-pim-service
+    config:
+      add:
+        headers:
+          - "X-Kong-Route:internal"
+          - "X-Service-Origin:s2s"
+
+  - name: request-transformer
+    service: internal-customer-service
+    config:
+      add:
+        headers:
+          - "X-Kong-Route:internal"
+          - "X-Service-Origin:s2s"
+
+  - name: request-transformer
+    service: internal-tenant-service
+    config:
+      add:
+        headers:
+          - "X-Kong-Route:internal"
+          - "X-Service-Origin:s2s"
+
+  - name: request-transformer
+    service: internal-iam-service
+    config:
+      add:
+        headers:
+          - "X-Kong-Route:internal"
+          - "X-Service-Origin:s2s"
+
+  - name: request-transformer
+    service: internal-notification-service
+    config:
+      add:
+        headers:
+          - "X-Kong-Route:internal"
+          - "X-Service-Origin:s2s"
+
+  # Plugin Prometheus para métricas globales
+  - name: prometheus
+    config:
+      per_consumer: true
+      status_code_metrics: true
+      latency_metrics: true
+      bandwidth_metrics: true
