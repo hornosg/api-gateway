@@ -1,0 +1,124 @@
+name: Kong Gateway CI/CD
+
+on:
+  push:
+    branches: [ main, develop ]
+  pull_request:
+    branches: [ main, develop ]
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      
+      - name: Validar configuración de Kong
+        run: |
+          docker run --rm -v ${PWD}:/kong-config kong:3.5 kong config parse /kong-config/kong.yml
+
+  build:
+    needs: validate
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      
+      - name: Login to Docker Hub
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+      
+      - name: Build y push de imagen
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          push: true
+          tags: |
+            ${{ secrets.DOCKERHUB_USERNAME }}/kong-gateway:${{ github.sha }}
+            ${{ secrets.DOCKERHUB_USERNAME }}/kong-gateway:latest
+
+  deploy-staging:
+    needs: build
+    if: github.ref == 'refs/heads/develop'
+    runs-on: ubuntu-latest
+    environment: staging
+    steps:
+      - name: Deploy to staging
+        run: |
+          echo "Desplegando a staging..."
+          # Aquí irían los comandos de despliegue a staging
+          # Por ejemplo, usando kubectl para actualizar un deployment en K8s
+
+  deploy-production:
+    needs: build
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    environment: production
+    steps:
+      - name: Deploy to production
+        run: |
+          echo "Desplegando a producción..."
+          # Aquí irían los comandos de despliegue a producción
+          # Por ejemplo, usando kubectl para actualizar un deployment en K8s
+
+
+
+      - name: Collect diagnostics and notify Telegram on failure
+        if: failure()
+        run: |
+          DIAG="SSH unavailable (pre-deploy failure)"
+          if [ -f ~/.ssh/deploy_key ]; then
+            DIAG=$(ssh -i ~/.ssh/deploy_key -o StrictHostKeyChecking=no -o ConnectTimeout=10 \
+              deploy@${{ secrets.DROPLET_IP }} \
+              'export KUBECONFIG=/home/deploy/.kube/config && \
+               echo "=== Pod Status ===" && \
+               kubectl get pods -l app=${{ env.DEPLOYMENT_NAME }} -n ${{ env.NAMESPACE }} 2>/dev/null | tail -5 && \
+               echo "=== Events ===" && \
+               kubectl describe pod -l app=${{ env.DEPLOYMENT_NAME }} -n ${{ env.NAMESPACE }} 2>/dev/null | grep -A8 "Events:" | tail -10 && \
+               echo "=== Logs ===" && \
+               (kubectl logs -l app=${{ env.DEPLOYMENT_NAME }} -n ${{ env.NAMESPACE }} --previous --tail=20 2>/dev/null || \
+                kubectl logs -l app=${{ env.DEPLOYMENT_NAME }} -n ${{ env.NAMESPACE }} --tail=20 2>/dev/null || \
+                echo "no logs")' \
+              2>/dev/null | head -c 2800) || DIAG="SSH failed"
+          fi
+          MSG=$(printf '❌ FAILED: ${{ env.IMAGE_NAME }}\nCommit: ${{ github.sha }}\nRun: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}\n\n%s' "$DIAG")
+          curl -s -X POST "https://api.telegram.org/bot${{ secrets.TELEGRAM_BOT_TOKEN }}/sendMessage" \
+            -d chat_id="${{ secrets.TELEGRAM_CHAT_ID }}" \
+            --data-urlencode text="$MSG"
+
+      - name: Notify Telegram on success
+        if: success()
+        run: |
+          MSG=$(printf '✅ DEPLOYED: ${{ env.IMAGE_NAME }}\nCommit: ${{ github.sha }}')
+          curl -s -X POST "https://api.telegram.org/bot${{ secrets.TELEGRAM_BOT_TOKEN }}/sendMessage" \
+            -d chat_id="${{ secrets.TELEGRAM_CHAT_ID }}" \
+            --data-urlencode text="$MSG"
+
+      - name: Notify Langfuse on deploy
+        if: always()
+        env:
+          LANGFUSE_PUBLIC_KEY: ${{ secrets.LANGFUSE_PUBLIC_KEY }}
+          LANGFUSE_SECRET_KEY: ${{ secrets.LANGFUSE_SECRET_KEY }}
+          LANGFUSE_BASE_URL: ${{ secrets.LANGFUSE_BASE_URL }}
+        run: |
+          [ -z "$LANGFUSE_PUBLIC_KEY" ] && exit 0
+          STATUS="${{ job.status }}"
+          TIMESTAMP=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
+          TRACE_ID="ci-${{ env.IMAGE_NAME }}-${{ github.sha }}"
+          curl -s -X POST "$LANGFUSE_BASE_URL/api/public/traces" \
+            -u "$LANGFUSE_PUBLIC_KEY:$LANGFUSE_SECRET_KEY" \
+            -H "Content-Type: application/json" \
+            -d "{
+              \"id\": \"$TRACE_ID\",
+              \"name\": \"ci:deploy\",
+              \"timestamp\": \"$TIMESTAMP\",
+              \"input\": \"${{ github.sha }}\",
+              \"metadata\": {
+                \"service\": \"${{ env.IMAGE_NAME }}\",
+                \"sha\": \"${{ github.sha }}\",
+                \"run_id\": \"${{ github.run_id }}\",
+                \"branch\": \"${{ github.ref_name }}\",
+                \"status\": \"$STATUS\"
+              },
+              \"tags\": [\"ci\", \"deploy\", \"service:${{ env.IMAGE_NAME }}\", \"status:$STATUS\"]
+            }" > /dev/null || true

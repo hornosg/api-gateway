@@ -1,0 +1,729 @@
+openapi: 3.1.0
+info:
+  title: Mercado Cercano - SaaS Multi-Tenant API Gateway
+  version: 3.0.0
+  description: |
+    API Gateway unificado para la plataforma SaaS Multi-tenant "Mercado Cercano".
+    
+    ## 🛡️ Autenticación
+    
+    El gateway soporta dos tipos de autenticación:
+    - **JWT Bearer Token**: Para operaciones de tenant (backoffice/sellers)
+    - **API Key**: Para operaciones administrativas globales (marketplace admin)
+    
+    ## 🌐 Servicios Disponibles
+    
+    - **IAM Service**: Gestión de identidad y tenants  
+    - **PIM Service**: Gestión de productos e información
+    - **Stock Service**: Gestión de inventario y almacenes
+    - **AI Gateway**: Servicios de inteligencia artificial
+    - **Scraper Service**: Extracción de datos de productos
+    
+    ## 🔄 Actualizado v3.0.0
+    
+    - ✅ **Kong Gateway**: Configuración completa verificada
+    - 🧪 **Tests integrados**: Suite de pruebas automatizadas
+    - 🛡️ **Seguridad multicapa**: JWT, ACL, Rate Limiting, CORS
+    - 📋 **Endpoints validados**: Todos los servicios verificados
+
+servers:
+  - url: http://localhost:8001
+    description: Kong Gateway (Desarrollo)
+  - url: https://api.mercadocercano.com
+    description: Kong Gateway (Producción)
+
+components:
+  securitySchemes:
+    BearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: "JWT Token para operaciones de tenant"
+    
+    ApiKeyAuth:
+      type: apiKey
+      in: header
+      name: X-API-Key
+      description: "API Key para operaciones administrativas globales"
+  
+  parameters:
+    TenantIdHeader:
+      name: X-Tenant-ID
+      in: header
+      required: true
+      schema:
+        type: string
+        format: uuid
+        example: "550e8400-e29b-41d4-a716-446655440000"
+      description: "ID del tenant (requerido para operaciones tenant-specific)"
+    
+    UserRoleHeader:
+      name: X-User-Role
+      in: header
+      schema:
+        type: string
+        enum: [marketplace_admin, tenant_admin, seller, customer]
+        example: "marketplace_admin"
+      description: "Rol del usuario para operaciones administrativas"
+    
+    PageParam:
+      name: page
+      in: query
+      schema:
+        type: integer
+        minimum: 1
+        default: 1
+      description: "Número de página"
+    
+    PageSizeParam:
+      name: page_size
+      in: query
+      schema:
+        type: integer
+        minimum: 1
+        maximum: 100
+        default: 10
+      description: "Tamaño de página"
+
+  responses:
+    UnauthorizedError:
+      description: "Token de autenticación faltante o inválido"
+      content:
+        application/json:
+          schema:
+            type: object
+            properties:
+              error:
+                type: string
+                example: "Unauthorized"
+              message:
+                type: string
+                example: "Authentication token required"
+    
+    ForbiddenError:
+      description: "Acceso denegado - permisos insuficientes"
+      content:
+        application/json:
+          schema:
+            type: object
+            properties:
+              error:
+                type: string
+                example: "Forbidden"
+              message:
+                type: string
+                example: "Insufficient permissions"
+    
+    RateLimitError:
+      description: "Límite de rate limiting excedido"
+      content:
+        application/json:
+          schema:
+            type: object
+            properties:
+              message:
+                type: string
+                example: "API rate limit exceeded"
+              retry_after:
+                type: integer
+                example: 60
+
+  schemas:
+    HealthStatus:
+      type: object
+      properties:
+        status:
+          type: string
+          example: "ok"
+        service:
+          type: string
+          example: "iam"
+        version:
+          type: string
+          example: "1.0.0"
+        database:
+          type: string
+          example: "ok"
+      required:
+        - status
+        - service
+    
+    PaginatedResponse:
+      type: object
+      properties:
+        items:
+          type: array
+          items: {}
+        total_count:
+          type: integer
+          example: 150
+        page:
+          type: integer
+          example: 1
+        page_size:
+          type: integer
+          example: 10
+        total_pages:
+          type: integer
+          example: 15
+      required:
+        - items
+        - total_count
+        - page
+        - page_size
+        - total_pages
+
+paths:
+  # ========================================
+  # SISTEMA - Health Checks
+  # ========================================
+  
+  /iam/health:
+    get:
+      tags:
+        - System
+      summary: "IAM Service Health Check"
+      description: "Verificar estado de salud del servicio de identidad"
+      responses:
+        '200':
+          description: "Servicio funcionando correctamente"
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HealthStatus'
+              example:
+                status: "up"
+                service: "iam"
+                version: "1.0.0"
+  
+  /pim/api/v1/health:
+    get:
+      tags:
+        - System
+      summary: "PIM Service Health Check"
+      description: "Verificar estado de salud del servicio de productos"
+      responses:
+        '200':
+          description: "Servicio funcionando correctamente"
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HealthStatus'
+              example:
+                status: "up"
+                service: "pim"
+                version: "2.1.0"
+  
+  /stock/health:
+    get:
+      tags:
+        - System
+      summary: "Stock Service Health Check"
+      description: "Verificar estado de salud del servicio de inventario"
+      responses:
+        '200':
+          description: "Servicio funcionando correctamente"
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HealthStatus'
+              example:
+                status: "UP"
+                service: "stock"
+  
+  /ai-gateway/:
+    get:
+      tags:
+        - System
+      summary: "AI Gateway Status"
+      description: "Verificar estado y capacidades del AI Gateway"
+      responses:
+        '200':
+          description: "AI Gateway funcionando correctamente"
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                    example: true
+                  message:
+                    type: string
+                    example: "AI Gateway is running"
+                  version:
+                    type: string
+                    example: "1.0.0"
+                  environment:
+                    type: string
+                    example: "development"
+                  service:
+                    type: string
+                    example: "ai-gateway"
+                  agents:
+                    type: array
+                    items:
+                      type: string
+                    example: ["Smart Onboarding", "Business Intelligence", "Document Chat", "Voice-to-Sale", "Product Categorization"]
+                  endpoints:
+                    type: object
+                    example:
+                      onboarding: "/ai/onboarding/"
+                      business_intelligence: "/ai/business-intelligence/"
+                      documents: "/ai/documents/"
+                      voice: "/ai/voice/"
+                      products: "/ai/products/"
+
+  # ========================================
+  # IAM SERVICE - Autenticación y Usuarios
+  # ========================================
+  
+  /iam/api/v1/auth/login:
+    post:
+      tags:
+        - Authentication
+      summary: "Iniciar sesión"
+      description: "Autenticar usuario con email/password u OAuth"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                email:
+                  type: string
+                  format: email
+                  example: "usuario@mercadocercano.com"
+                password:
+                  type: string
+                  example: "password123"
+                oauth_provider:
+                  type: string
+                  enum: [google, facebook]
+                oauth_token:
+                  type: string
+              required:
+                - email
+      responses:
+        '200':
+          description: "Login exitoso"
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  access_token:
+                    type: string
+                    example: "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9..."
+                  refresh_token:
+                    type: string
+                    example: "refresh_token_string"
+                  user:
+                    type: object
+                    properties:
+                      id:
+                        type: string
+                        format: uuid
+                        example: "550e8400-e29b-41d4-a716-446655440000"
+                      email:
+                        type: string
+                        example: "usuario@mercadocercano.com"
+                      role:
+                        type: string
+                        example: "tenant_admin"
+                      tenant_id:
+                        type: string
+                        format: uuid
+                        example: "550e8400-e29b-41d4-a716-446655440001"
+        '401':
+          $ref: '#/components/responses/UnauthorizedError'
+        '429':
+          $ref: '#/components/responses/RateLimitError'
+
+  /iam/api/v1/users:
+    get:
+      tags:
+        - Users
+      summary: "Listar usuarios del tenant"
+      description: "Obtener lista paginada de usuarios del tenant"
+      security:
+        - BearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/TenantIdHeader'
+        - $ref: '#/components/parameters/PageParam'
+        - $ref: '#/components/parameters/PageSizeParam'
+      responses:
+        '200':
+          description: "Lista de usuarios"
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PaginatedResponse'
+        '401':
+          $ref: '#/components/responses/UnauthorizedError'
+        '403':
+          $ref: '#/components/responses/ForbiddenError'
+        '429':
+          $ref: '#/components/responses/RateLimitError'
+
+  # ========================================
+  # PIM SERVICE - Productos
+  # ========================================
+  
+  /pim/api/v1/products:
+    get:
+      tags:
+        - Products
+      summary: "Listar productos del tenant"
+      description: "Obtener lista paginada y filtrada de productos del tenant"
+      security:
+        - BearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/TenantIdHeader'
+        - $ref: '#/components/parameters/PageParam'
+        - $ref: '#/components/parameters/PageSizeParam'
+        - name: search
+          in: query
+          schema:
+            type: string
+          description: "Texto de búsqueda"
+        - name: category_id
+          in: query
+          schema:
+            type: string
+            format: uuid
+          description: "Filtrar por categoría"
+        - name: status
+          in: query
+          schema:
+            type: string
+            enum: [active, inactive, draft]
+          description: "Filtrar por estado"
+      responses:
+        '200':
+          description: "Lista de productos"
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PaginatedResponse'
+        '401':
+          $ref: '#/components/responses/UnauthorizedError'
+        '429':
+          $ref: '#/components/responses/RateLimitError'
+    
+    post:
+      tags:
+        - Products
+      summary: "Crear nuevo producto"
+      description: "Crear un producto en el catálogo del tenant"
+      security:
+        - BearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/TenantIdHeader'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                name:
+                  type: string
+                  example: "Laptop Gaming XYZ"
+                description:
+                  type: string
+                  example: "Laptop gaming con RTX 4060 y 16GB RAM"
+                sku:
+                  type: string
+                  example: "LAP-001"
+                price:
+                  type: number
+                  example: 899.99
+                category_id:
+                  type: string
+                  format: uuid
+                brand_id:
+                  type: string
+                  format: uuid
+                attributes:
+                  type: object
+                  additionalProperties: true
+              required:
+                - name
+                - sku
+                - price
+      responses:
+        '201':
+          description: "Producto creado exitosamente"
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  id:
+                    type: string
+                    format: uuid
+                    example: "550e8400-e29b-41d4-a716-446655440002"
+                  name:
+                    type: string
+                    example: "Laptop Gaming XYZ"
+                  sku:
+                    type: string
+                    example: "LAP-001"
+                  created_at:
+                    type: string
+                    format: date-time
+        '400':
+          description: "Datos inválidos"
+        '401':
+          $ref: '#/components/responses/UnauthorizedError'
+        '429':
+          $ref: '#/components/responses/RateLimitError'
+
+  /pim/api/v1/quickstart/setup:
+    post:
+      tags:
+        - Quickstart
+      summary: "Setup inicial del tenant"
+      description: "Configuración rápida inicial con productos template"
+      security:
+        - BearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/TenantIdHeader'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                business_type_id:
+                  type: string
+                  format: uuid
+                  example: "550e8400-e29b-41d4-a716-446655440003"
+                setup_products:
+                  type: boolean
+                  example: true
+                setup_categories:
+                  type: boolean
+                  example: true
+                product_count:
+                  type: integer
+                  minimum: 1
+                  maximum: 100
+                  example: 20
+              required:
+                - business_type_id
+      responses:
+        '200':
+          description: "Setup completado exitosamente"
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                    example: true
+                  products_created:
+                    type: integer
+                    example: 18
+                  categories_created:
+                    type: integer
+                    example: 5
+                  setup_time:
+                    type: string
+                    example: "2.5s"
+        '401':
+          $ref: '#/components/responses/UnauthorizedError'
+        '429':
+          $ref: '#/components/responses/RateLimitError'
+
+  # ========================================
+  # STOCK SERVICE - Inventario
+  # ========================================
+  
+  /stock/api/v1/inventory:
+    get:
+      tags:
+        - Inventory
+      summary: "Listar inventario del tenant"
+      description: "Obtener lista paginada del inventario"
+      security:
+        - BearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/TenantIdHeader'
+        - $ref: '#/components/parameters/PageParam'
+        - $ref: '#/components/parameters/PageSizeParam'
+        - name: location_id
+          in: query
+          schema:
+            type: string
+            format: uuid
+          description: "Filtrar por ubicación/almacén"
+      responses:
+        '200':
+          description: "Lista de inventario"
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PaginatedResponse'
+        '401':
+          $ref: '#/components/responses/UnauthorizedError'
+        '429':
+          $ref: '#/components/responses/RateLimitError'
+
+  # ========================================
+  # AI GATEWAY - Servicios de IA
+  # ========================================
+  
+  /ai/products/categorize:
+    post:
+      tags:
+        - AI Services
+      summary: "Categorizar producto con IA"
+      description: "Usar IA para categorizar automáticamente un producto"
+      security:
+        - BearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/TenantIdHeader'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                product_name:
+                  type: string
+                  example: "Laptop Gaming"
+                description:
+                  type: string
+                  example: "Laptop para juegos con RTX 4060"
+              required:
+                - product_name
+      responses:
+        '200':
+          description: "Categorización completada"
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  suggested_category:
+                    type: object
+                    properties:
+                      id:
+                        type: string
+                        format: uuid
+                      name:
+                        type: string
+                        example: "Computadoras"
+                  confidence:
+                    type: number
+                    example: 0.95
+                  alternatives:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        category_name:
+                          type: string
+                        confidence:
+                          type: number
+        '401':
+          $ref: '#/components/responses/UnauthorizedError'
+        '429':
+          $ref: '#/components/responses/RateLimitError'
+
+  /ai/products/curate:
+    post:
+      tags:
+        - AI Services (Admin)
+      summary: "Curar producto con IA (Admin)"
+      description: "Operación administrativa de curación de productos"
+      security:
+        - ApiKeyAuth: []
+      parameters:
+        - $ref: '#/components/parameters/UserRoleHeader'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                product:
+                  type: object
+                  properties:
+                    id:
+                      type: string
+                      format: uuid
+                    name:
+                      type: string
+                      example: "Producto a Curar"
+                    brand:
+                      type: string
+                      example: "Marca X"
+                    category:
+                      type: string
+                      example: "Categoría Y"
+                    price:
+                      type: number
+                      example: 100.50
+                    currency:
+                      type: string
+                      example: "ARS"
+                use_ai_extraction:
+                  type: boolean
+                  example: true
+                validate_brand:
+                  type: boolean
+                  example: true
+              required:
+                - product
+      responses:
+        '200':
+          description: "Curación completada"
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  curated_product:
+                    type: object
+                  brand_validated:
+                    type: boolean
+                  category_suggestions:
+                    type: array
+                    items:
+                      type: object
+        '401':
+          $ref: '#/components/responses/UnauthorizedError'
+        '403':
+          $ref: '#/components/responses/ForbiddenError'
+        '429':
+          $ref: '#/components/responses/RateLimitError'
+
+tags:
+  - name: System
+    description: "Endpoints de estado y salud del sistema"
+  - name: Authentication
+    description: "Autenticación y gestión de sesiones"
+  - name: Users
+    description: "Gestión de usuarios"
+  - name: Products
+    description: "Gestión de productos del tenant"
+  - name: Inventory
+    description: "Gestión de inventario y stock"
+  - name: Quickstart
+    description: "Configuración inicial rápida del tenant"
+  - name: AI Services
+    description: "Servicios de inteligencia artificial para tenants"
+  - name: AI Services (Admin)
+    description: "Servicios de IA para administración global"
+
+security:
+  - BearerAuth: []
+  - ApiKeyAuth: []
