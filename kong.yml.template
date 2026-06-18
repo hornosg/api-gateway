@@ -13,7 +13,7 @@ services:
 
   # Servicio PIM
   - name: pim-service
-    url: http://mc-pim-service:8080
+    url: http://mc-pim-service:8090
     connect_timeout: 60000
     write_timeout: 60000
     read_timeout: 60000
@@ -25,7 +25,7 @@ services:
 
   # Servicio PIM S2S (comunicación interna, API-Key auth, sin JWT)
   - name: pim-s2s-service
-    url: http://mc-pim-service:8080/api/v1/s2s
+    url: http://mc-pim-service:8090/api/v1/s2s
     connect_timeout: 60000
     write_timeout: 60000
     read_timeout: 60000
@@ -48,6 +48,54 @@ services:
               allow:
                 - "service-internal"
               hide_groups_header: true
+
+  # Servicio PIM S2S — Reclasificación masiva (route dedicado con rate-limit restrictivo)
+  # Mutación global pesada: UPDATE masivo sobre global_products (hasta 50k filas) + snapshot por apply.
+  # Service propio con la URL upstream completa (incluye el path /api/v1/s2s/global-products/...):
+  # así strip_path:true puede strippar el path completo del request y el upstream queda IDÉNTICO
+  # al del route genérico (pim recibe POST /api/v1/s2s/global-products/reclassify-business-types).
+  # Kong prioriza este route sobre pim-s2s-route porque su path es un prefijo más largo (match más específico).
+  - name: pim-s2s-reclassify-service
+    url: http://mc-pim-service:8090/api/v1/s2s/global-products/reclassify-business-types
+    connect_timeout: 60000
+    write_timeout: 60000
+    read_timeout: 60000
+    routes:
+      - name: pim-s2s-reclassify-route
+        paths:
+          - /pim/api/v1/s2s/global-products/reclassify-business-types
+        strip_path: true
+        methods:
+          - POST
+        plugins:
+          # Auth replicada del route genérico (NO se hereda: es otro service/route).
+          - name: key-auth
+            config:
+              key_names:
+                - X-API-Key
+              hide_credentials: true
+          - name: acl
+            config:
+              allow:
+                - "service-internal"
+              hide_groups_header: true
+          # Rate-limiting RESTRICTIVO: es una operación de operador humano, no tráfico máquina.
+          # 5/min, 30/hora: permite reintentos puntuales y una sesión de trabajo razonable,
+          # pero corta abuso/loops accidentales sobre un UPDATE de hasta 50k filas + snapshot.
+          # policy: redis (lab-redis) — primer rate-limit redis del template: el límite se comparte
+          # entre réplicas de Kong (a diferencia de policy:local), correcto para un tope global de la op.
+          - name: rate-limiting
+            config:
+              minute: 5
+              hour: 30
+              policy: redis
+              redis_host: lab-redis
+              redis_port: 6379
+              # lab-redis (redis:7-alpine) sin requirepass ni db selection: host+port alcanza.
+              # fault_tolerant: false (fail-CLOSED) — dictamen @dev-security gate L4 E24/PR-4:
+              # el rate-limit contiene daño de una mutación global destructiva (UPDATE 50k + snapshot);
+              # si redis cae, mejor 500 que permitir martillar la op sin tope. No es QoS, es contención.
+              fault_tolerant: false
 
   # Servicio Stock
   - name: stock-service
@@ -96,7 +144,7 @@ services:
 
   # Servicio Marketplace (funcionalidad dentro del PIM)
   - name: marketplace-service
-    url: http://mc-pim-service:8080/api/v1
+    url: http://mc-pim-service:8090/api/v1
     routes:
       - name: marketplace-route
         paths:
@@ -224,7 +272,7 @@ services:
 
   # AI Gateway -> PIM Service (ruta dedicada)
   - name: ai-gateway-pim-service
-    url: http://mc-pim-service:8080
+    url: http://mc-pim-service:8090
     connect_timeout: 60000
     write_timeout: 60000
     read_timeout: 60000
@@ -261,7 +309,7 @@ services:
 
   # S2S: PIM Service (interno)
   - name: internal-pim-service
-    url: http://mc-pim-service:8080
+    url: http://mc-pim-service:8090
     connect_timeout: 60000
     write_timeout: 60000
     read_timeout: 60000
@@ -397,6 +445,7 @@ plugins:
         - X-Refresh-Token
         - X-User-Role
         - X-Request-ID
+        - X-API-Key
       exposed_headers:
         - X-Auth-Token
         - X-Request-ID
