@@ -6,6 +6,45 @@ services:
   - name: iam-service
     url: http://mc-iam-service:8080
     routes:
+      # K2 (ADR-003a) — Anti fuerza bruta en LOGIN. Route dedicado con rate-limiting
+      # ROUTE-scoped que SUSTITUYE al de service (60/min) solo para este path (Kong
+      # ejecuta el plugin del scope más específico). Match por prefijo más largo:
+      # /iam/api/v1/auth/login gana sobre /iam/ (mismo patrón que pim-s2s-reclassify).
+      # limit_by: ip OBLIGATORIO — login es anónimo (anonymous-consumer); con el default
+      # limit_by:consumer todos los logins compartirían un bucket y un atacante tumbaría
+      # el login de TODA la plataforma con una sola IP. Anti credential-stuffing.
+      # policy: local (fail-open): la disponibilidad del login pesa más que la exactitud
+      # del contador anti-bruteforce. Single-node lab — reevaluar a redis si Kong va multi-nodo
+      # (con local, N nodos = N× el límite efectivo). Depende de KONG_TRUSTED_IPS vacío (S1).
+      - name: iam-auth-login-route
+        paths:
+          - /iam/api/v1/auth/login
+        strip_path: true
+        methods:
+          - POST
+        plugins:
+          - name: rate-limiting
+            config:
+              minute: 5
+              hour: 100
+              limit_by: ip
+              policy: local
+      # K2 (ADR-003a) — Anti fuerza bruta en REFRESH. Más holgado que login: es tráfico
+      # de máquina y puede haber varias sesiones legítimas tras un NAT. Mismas reglas
+      # (limit_by:ip, policy:local) que login.
+      - name: iam-auth-refresh-route
+        paths:
+          - /iam/api/v1/auth/refresh
+        strip_path: true
+        methods:
+          - POST
+        plugins:
+          - name: rate-limiting
+            config:
+              minute: 30
+              hour: 600
+              limit_by: ip
+              policy: local
       - name: iam-route
         paths:
           - /iam/
