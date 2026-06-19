@@ -6,16 +6,23 @@ services:
   - name: iam-service
     url: http://mc-iam-service:8080
     routes:
-      # K2 (ADR-003a) — Anti fuerza bruta en LOGIN. Route dedicado con rate-limiting
-      # ROUTE-scoped que SUSTITUYE al de service (60/min) solo para este path (Kong
-      # ejecuta el plugin del scope más específico). Match por prefijo más largo:
-      # /iam/api/v1/auth/login gana sobre /iam/ (mismo patrón que pim-s2s-reclassify).
-      # limit_by: ip OBLIGATORIO — login es anónimo (anonymous-consumer); con el default
-      # limit_by:consumer todos los logins compartirían un bucket y un atacante tumbaría
-      # el login de TODA la plataforma con una sola IP. Anti credential-stuffing.
-      # policy: local (fail-open): la disponibilidad del login pesa más que la exactitud
-      # del contador anti-bruteforce. Single-node lab — reevaluar a redis si Kong va multi-nodo
-      # (con local, N nodos = N× el límite efectivo). Depende de KONG_TRUSTED_IPS vacío (S1).
+      - name: iam-route
+        paths:
+          - /iam/
+        strip_path: true
+
+  # K2 (ADR-003a) — LOGIN público (anti fuerza bruta).
+  # FIX 2026-06-19: antes este route colgaba de iam-service (url SIN path) con
+  # strip_path:true → Kong strippeaba el path COMPLETO y el upstream recibía "POST /"
+  # (→ "Authorization header required": login ROTO por el gateway). Lo introdujo #233 al
+  # scopear el rate-limit sin seguir el patrón documentado de pim-s2s-reclassify-service.
+  # AHORA es un SERVICE dedicado con la URL upstream COMPLETA (mismo patrón, ver líneas
+  # de pim-s2s-reclassify): strip_path:true deja el upstream EXACTO /api/v1/auth/login.
+  # Al ser service propio NO hereda el jwt+acl de iam-service → login público (correcto:
+  # todavía no hay token). El rate-limiting K2 (5/min, limit_by:ip, policy:local) queda igual.
+  - name: iam-auth-login-service
+    url: http://mc-iam-service:8080/api/v1/auth/login
+    routes:
       - name: iam-auth-login-route
         paths:
           - /iam/api/v1/auth/login
@@ -29,9 +36,12 @@ services:
               hour: 100
               limit_by: ip
               policy: local
-      # K2 (ADR-003a) — Anti fuerza bruta en REFRESH. Más holgado que login: es tráfico
-      # de máquina y puede haber varias sesiones legítimas tras un NAT. Mismas reglas
-      # (limit_by:ip, policy:local) que login.
+
+  # K2 (ADR-003a) — REFRESH público. Mismo fix/patrón que login (service dedicado con
+  # URL upstream completa). Más holgado: 30/min (tráfico de máquina, varias sesiones tras NAT).
+  - name: iam-auth-refresh-service
+    url: http://mc-iam-service:8080/api/v1/auth/refresh
+    routes:
       - name: iam-auth-refresh-route
         paths:
           - /iam/api/v1/auth/refresh
@@ -45,10 +55,6 @@ services:
               hour: 600
               limit_by: ip
               policy: local
-      - name: iam-route
-        paths:
-          - /iam/
-        strip_path: true
 
   # Servicio PIM
   - name: pim-service
