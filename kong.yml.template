@@ -159,6 +159,11 @@ services:
         paths:
           - /catalog/
         strip_path: true
+      # Admin BFF — rutas de backoffice que proxean a PIM con audit de operador.
+      - name: admin-bff-route
+        paths:
+          - /admin/
+        strip_path: true
 
   # Servicio Sales - HITO v0.5 (HTTP Routes Alignment)
   - name: sales-service
@@ -176,6 +181,15 @@ services:
       - name: customer-route
         paths:
           - /customers/
+        strip_path: true
+
+  # Ledger Service (PLAT-E02)
+  - name: ledger-service
+    url: http://mc-ledger-service:8120
+    routes:
+      - name: ledger-route
+        paths:
+          - /ledger/
         strip_path: true
 
   # Payment Method Service (POS-SALE-02)
@@ -595,6 +609,21 @@ plugins:
         - jwt
       anonymous: "anonymous-consumer"
 
+  # Plugin JWT para Ledger Service (PLAT-E02)
+  - name: jwt
+    service: ledger-service
+    config:
+      header_names:
+        - Authorization
+      claims_to_verify:
+        - exp
+      key_claim_name: iss
+      secret_is_base64: false
+      run_on_preflight: false
+      uri_param_names:
+        - jwt
+      anonymous: "anonymous-consumer"
+
   # Plugin JWT para Payment Method Service
   - name: jwt
     service: payment-method-service
@@ -754,6 +783,15 @@ plugins:
         - "public-routes"
       hide_groups_header: true
 
+  # Plugin ACL para Ledger Service (PLAT-E02)
+  - name: acl
+    service: ledger-service
+    config:
+      allow:
+        - "authenticated"
+        - "public-routes"
+      hide_groups_header: true
+
   # Plugin ACL para Payment Method Service
   - name: acl
     service: payment-method-service
@@ -866,6 +904,14 @@ plugins:
   # Plugin Rate Limiting para Customer Service
   - name: rate-limiting
     service: customer-service
+    config:
+      minute: 60
+      hour: 1000
+      policy: local
+
+  # Plugin Rate Limiting para Ledger Service (PLAT-E02)
+  - name: rate-limiting
+    service: ledger-service
     config:
       minute: 60
       hour: 1000

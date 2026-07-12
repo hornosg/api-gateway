@@ -1,6 +1,7 @@
-# 🌐 SaaS MT API Gateway
+# 🌐 API Gateway del lab (`~/Projects`)
 
-API Gateway implementado con Kong que actúa como punto de entrada unificado para todos los microservicios del sistema SaaS Multi-tenant.
+API Gateway implementado con Kong (`lab-kong`) que actúa como **único punto de entrada** para
+todos los microservicios del lab — cross-project, replicable tal cual en prod.
 
 ## 📋 Descripción
 
@@ -15,41 +16,67 @@ Este servicio proporciona:
 ## 🏗️ Arquitectura
 
 ```
-Frontend Apps → Kong Gateway (8001) → Backend Services
+Frontend Apps → lab-kong Proxy (8000) → Backend Services
                      ↓
               [Auth, Rate Limit, CORS, Metrics]
 ```
 
 ## 🚀 Configuración y Uso
 
-### Desarrollo Local
+### Desarrollo Local — este repo es el ÚNICO gateway del lab (`~/Projects`)
 
-El gateway se ejecuta como parte de la infraestructura principal:
+Este repo (`infra/api-gateway/` dentro del lab, `hornosg/api-gateway` como git remoto) es la
+**única fuente de verdad** de Kong para todo `~/Projects` — cross-project, pensado para ser
+replicable tal cual en prod (mismo Dockerfile + template). El directorio `infra/kong/` que existía
+antes era un archivo huérfano y peligroso (recargarlo vía Admin API pisaba esta config real); fue
+retirado (`MC-E28`, root-cause del incidente del 2026-06-17).
+
+El contenedor `lab-kong` se levanta desde `infra/docker-compose.yml` (raíz del lab), construyendo
+la imagen de **este** directorio:
 
 ```bash
-# Iniciar con docker-compose
-docker-compose -f docker-compose.infra.yml up kong
+# Desde ~/Projects (raíz del lab)
+docker compose -f infra/docker-compose.yml up -d kong
 
-# Verificar estado
+# Ver estado
 curl http://localhost:8001/status
 
 # Ver servicios configurados
-curl http://localhost:8444/services
+curl http://localhost:8001/services
+```
+
+### Cómo se genera la config real (`kong.yml.template` → `KONG_DECLARATIVE_CONFIG`)
+
+`kong.yml` **no se edita directo en runtime** — la fuente versionada es `kong.yml.template`, con
+placeholders (`${JWT_SECRET}`, `${AI_GATEWAY_API_KEY}`, etc. y `__CORS_ORIGINS_PLACEHOLDER__`).
+Al bootear el contenedor, `entrypoint.sh`:
+1. Sustituye los placeholders `${...}` con los valores de `infra/api-gateway/.env` (secrets, API keys de consumers).
+2. Expande `__CORS_ORIGINS_PLACEHOLDER__` en una lista YAML a partir de `CORS_ORIGINS` (coma-separado) del mismo `.env`.
+3. Escribe el resultado en `/tmp/kong.yml` y lo apunta como `KONG_DECLARATIVE_CONFIG`.
+
+**Para aplicar cualquier cambio**: editar `kong.yml.template` y/o `.env`, después **rebuild +
+recrear** `lab-kong` — el template se copia a la imagen en el build (`COPY`, no volumen), así que
+un `restart` solo reutiliza la imagen vieja sin ver el cambio (verificado 2026-07-09 al agregar
+ledger-service: `restart` mantuvo la config anterior, hizo falta rebuild):
+```bash
+docker compose -f ~/Projects/infra/docker-compose.yml up -d --build kong
 ```
 
 ### Puertos
 
-- **8001**: Kong Proxy (punto de entrada para APIs)
-- **8444**: Kong Admin API (configuración y monitoreo)
+- **8000**: Kong Proxy (punto de entrada para APIs)
+- **8001**: Kong Admin API — expuesto solo en `127.0.0.1` del host (loopback-only, ver ADR-003a), no en la LAN
 
 ## 📁 Estructura del Proyecto
 
 ```
-saas-mt-api-gateway/
-├── kong.yml                    # Configuración declarativa de Kong
-├── Dockerfile                  # Imagen Docker (no usado actualmente)
+api-gateway/
+├── kong.yml.template            # Fuente de verdad versionada — 24+ servicios, consumers, jwt/acl/rate-limiting
+├── entrypoint.sh                # Renderiza el template con .env al boot del contenedor
+├── Dockerfile                   # Imagen usada por infra/docker-compose.yml (build context)
+├── .env / .env.example          # Secrets/CORS que entrypoint.sh inyecta (NO versionar .env real)
 ├── plugins/
-│   └── feature-flags/         # Plugin personalizado (pendiente de activación)
+│   └── feature-flags/          # Plugin personalizado (pendiente de activación)
 │       ├── handler.lua        
 │       └── schema.lua         
 ├── documentation/
@@ -60,12 +87,10 @@ saas-mt-api-gateway/
 
 ## 🔧 Servicios Configurados
 
-### Backend Services
-- **IAM Service**: `/iam/` → `http://iam-service:8080`
-- **PIM Service**: `/pim/` → `http://pim-service:8080`
-- **Stock Service**: `/stock/` → `http://stock-service:8080`
-- **AI Gateway**: `/ai-gateway/` → `http://ai-gateway:8000`
-- **Chat Service**: `/chat/` → `http://chat-service:8000`
+Ver el listado completo y actualizado en `kong.yml.template` (services: / routes:). Incluye,
+entre otros: IAM (+ rutas de auth login/refresh públicas con rate-limiting dedicado), PIM,
+Stock, Sales, Tenant, Customer, Payment Method, Onboarding, Catalog BFF, Webdata, Notifications,
+AI Gateway/Sales Chat, y rutas `internal-*` para tráfico s2s.
 
 ### Configuración de Plugins
 
@@ -100,19 +125,20 @@ Content-Type: application/json
 curl http://localhost:8001/status
 
 # Métricas Prometheus
-curl http://localhost:8001/metrics
+curl http://localhost:8000/metrics
 
-# Verificar servicios upstream
-curl http://localhost:8444/upstreams
+# Verificar servicios/rutas configurados
+curl http://localhost:8001/services
+curl http://localhost:8001/routes
 ```
 
 ### Logs
 ```bash
 # Ver logs del contenedor
-docker logs tv-kong
+docker logs lab-kong
 
 # Seguir logs en tiempo real
-docker logs -f tv-kong
+docker logs -f lab-kong
 ```
 
 ## 🛠️ Desarrollo
@@ -120,31 +146,32 @@ docker logs -f tv-kong
 ### Testing de Endpoints
 
 ```bash
-# Test sin autenticación (endpoint público)
-curl http://localhost:8001/iam/api/v1/health
+# Test sin autenticación (endpoint público) — vía el PROXY (8000), no el Admin API
+curl http://localhost:8000/iam/api/v1/health
 
 # Test con autenticación
-curl http://localhost:8001/pim/api/v1/products \
+curl http://localhost:8000/pim/api/v1/products \
   -H "Authorization: Bearer ${JWT_TOKEN}" \
   -H "X-Tenant-ID: ${TENANT_ID}"
 ```
 
 ### Agregar Nuevo Servicio
 
-1. Editar `kong.yml`
-2. Agregar configuración del servicio y rutas
-3. Reiniciar Kong: `docker-compose -f docker-compose.infra.yml restart kong`
+1. Editar `kong.yml.template` (agregar el bloque `services:`/`routes:`, y `consumers`/`acls`/`plugins` si requiere auth)
+2. Si necesita nuevos secrets, agregarlos como placeholder y documentarlos en `.env.example`
+3. Rebuild + recrear Kong: `docker compose -f ~/Projects/infra/docker-compose.yml up -d --build kong` (un `restart` solo no alcanza — el template se copia al build)
 
 ## ⚠️ Notas Importantes
 
 ### Estado del Plugin Feature-Flags
 El plugin personalizado `feature-flags` está desarrollado pero **NO está activo** en la configuración actual. Para activarlo:
-1. Modificar `docker-compose.infra.yml` para usar el Dockerfile personalizado
-2. Agregar `feature-flags` a la variable `KONG_PLUGINS`
-3. Reconstruir la imagen con el plugin incluido
+1. Agregar `feature-flags` a la variable `KONG_PLUGINS` (Dockerfile o env)
+2. Reconstruir la imagen (`docker compose -f ~/Projects/infra/docker-compose.yml build kong`) con el plugin incluido
 
 ### Configuración Actual
-Kong se ejecuta actualmente con la imagen estándar `kong:3.4.0` desde `docker-compose.infra.yml`. El Dockerfile personalizado en este directorio no se está utilizando.
+`lab-kong` se construye **desde el `Dockerfile` de este directorio** (`kong:3.4.0` como base) vía
+`infra/docker-compose.yml` (`build: context: ./api-gateway`) — no es la imagen stock sin modificar.
+El render de `kong.yml.template` con `.env` ocurre en cada arranque del contenedor (`entrypoint.sh`).
 
 ## 📚 Documentación Adicional
 
