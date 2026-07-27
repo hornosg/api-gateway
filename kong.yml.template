@@ -417,6 +417,20 @@ services:
           - /internal/notification/
         strip_path: true
 
+  # =========================================================================
+  # WEB DISPLAY
+  # =========================================================================
+
+  - name: web-display-service
+    url: http://web-display:8080
+    connect_timeout: 60000
+    write_timeout: 60000
+    read_timeout: 60000
+    routes:
+      - name: web-display-route
+        paths:
+          - /display
+        strip_path: true
 consumers:
   # Consumer para JWT autenticado
   - username: iam-service-consumer
