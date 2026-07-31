@@ -431,6 +431,25 @@ services:
         paths:
           - /display
         strip_path: true
+
+  # =========================================================================
+  # CATALOG SERVICE (PLAT-E39 · T1d) — registrado en el borde SIN mover rutas de datos.
+  # Las rutas marketplace*/global-catalog* siguen apuntando a pim hasta el flip de la
+  # etapa B/C; esto sólo hace a catalog-service alcanzable por el gateway con auth propia.
+  # Path propio /catalog-service/ — NO colisiona con /catalog (catalog-bff) ni /pim.
+  # FAIL-CLOSED (D3.3): su plugin jwt (abajo) NO define fallback anónimo, así que NO cae
+  # al consumer anónimo compartido → sin JWT válido, Kong responde 401 en el borde.
+  # =========================================================================
+  - name: catalog-service
+    url: http://mc-catalog-service:8160
+    connect_timeout: 60000
+    write_timeout: 60000
+    read_timeout: 60000
+    routes:
+      - name: catalog-service-route
+        paths:
+          - /catalog-service/
+        strip_path: true
 consumers:
   # Consumer para JWT autenticado
   - username: iam-service-consumer
@@ -985,6 +1004,42 @@ plugins:
     config:
       minute: 100
       hour: 2000
+      policy: local
+
+  # =========================================================================
+  # CATALOG SERVICE (PLAT-E39 · T1d) — postura de auth para estos paths.
+  # jwt: MISMA verificación que pim (HS256 del consumer iam-service, iss, exp), pero
+  # SIN fallback anónimo → a diferencia de pim/marketplace, NO cae al consumer anónimo
+  # compartido (D3.3): sin JWT válido, Kong devuelve 401 en el borde (fail-closed).
+  # La autz de rol (system_admin) la hace catalog-service dentro del proceso (T1c);
+  # el gateway sólo garantiza identidad verificada. ACL: solo "authenticated"
+  # (NO "public-routes"), coherente con el fail-closed.
+  # =========================================================================
+  - name: jwt
+    service: catalog-service
+    config:
+      header_names:
+        - Authorization
+      claims_to_verify:
+        - exp
+      key_claim_name: iss
+      secret_is_base64: false
+      run_on_preflight: false
+      uri_param_names:
+        - jwt
+
+  - name: acl
+    service: catalog-service
+    config:
+      allow:
+        - "authenticated"
+      hide_groups_header: true
+
+  - name: rate-limiting
+    service: catalog-service
+    config:
+      minute: 60
+      hour: 1000
       policy: local
 
   # Plugin Key Auth para AI Gateway -> PIM
