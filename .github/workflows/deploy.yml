@@ -39,7 +39,10 @@ jobs:
 
   deploy-staging:
     needs: build
-    if: github.ref == 'refs/heads/develop'
+    # DEPLOY DESACTIVADO (owner, 2026-09-13): el destino está apagado y el push vuelve a estar
+    # habilitado (D-11). `validate` y `build` SÍ siguen corriendo en cada push — validar la
+    # config declarativa de Kong es justamente lo que no hay que perder. Sólo se apaga el deploy.
+    if: github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
     environment: staging
     steps:
@@ -51,7 +54,8 @@ jobs:
 
   deploy-production:
     needs: build
-    if: github.ref == 'refs/heads/main'
+    # DEPLOY DESACTIVADO (owner, 2026-09-13) — ver la nota de deploy-staging.
+    if: github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
     environment: production
     steps:
