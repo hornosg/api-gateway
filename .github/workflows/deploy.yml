@@ -1,10 +1,10 @@
 name: Kong Gateway CI/CD
 
+# 🛑 APAGADO (2026-10-16, decisión del owner): etapa de desarrollo, sin usuarios reales ni droplet
+# de destino. Los triggers push/pull_request se quitaron para que pushear no despliegue.
+# No devolverlos sin decisión explícita del owner (mismo criterio que iam-service/deploy.yml).
 on:
-  push:
-    branches: [ main, develop ]
-  pull_request:
-    branches: [ main, develop ]
+  workflow_dispatch:
 
 jobs:
   validate:
