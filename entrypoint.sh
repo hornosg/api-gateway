@@ -2,7 +2,7 @@
 set -e
 
 # Validate required environment variables
-required_vars=("AI_GATEWAY_API_KEY" "MARKETPLACE_ADMIN_API_KEY" "CORS_ORIGINS" "JWT_SECRET" "SALES_SERVICE_API_KEY" "CATALOG_BFF_API_KEY" "ONBOARDING_SERVICE_API_KEY" "PIM_S2S_API_KEY")
+required_vars=("AI_GATEWAY_API_KEY" "MARKETPLACE_ADMIN_API_KEY" "CORS_ORIGINS" "JWT_SECRET" "SALES_SERVICE_API_KEY" "CATALOG_BFF_API_KEY" "ONBOARDING_SERVICE_API_KEY" "PIM_S2S_API_KEY" "PIM_CATALOG_S2S_API_KEY")
 for var in "${required_vars[@]}"; do
   if [ -z "${!var}" ]; then
     echo "SECURITY ERROR: Required environment variable $var is not set"
@@ -11,7 +11,7 @@ for var in "${required_vars[@]}"; do
 done
 
 # Step 1: Replace API key and JWT secret placeholders
-sed "s|\${AI_GATEWAY_API_KEY}|${AI_GATEWAY_API_KEY}|g; s|\${MARKETPLACE_ADMIN_API_KEY}|${MARKETPLACE_ADMIN_API_KEY}|g; s|\${JWT_SECRET}|${JWT_SECRET}|g; s|\${SALES_SERVICE_API_KEY}|${SALES_SERVICE_API_KEY}|g; s|\${CATALOG_BFF_API_KEY}|${CATALOG_BFF_API_KEY}|g; s|\${ONBOARDING_SERVICE_API_KEY}|${ONBOARDING_SERVICE_API_KEY}|g; s|\${PIM_S2S_API_KEY}|${PIM_S2S_API_KEY}|g" \
+sed "s|\${AI_GATEWAY_API_KEY}|${AI_GATEWAY_API_KEY}|g; s|\${MARKETPLACE_ADMIN_API_KEY}|${MARKETPLACE_ADMIN_API_KEY}|g; s|\${JWT_SECRET}|${JWT_SECRET}|g; s|\${SALES_SERVICE_API_KEY}|${SALES_SERVICE_API_KEY}|g; s|\${CATALOG_BFF_API_KEY}|${CATALOG_BFF_API_KEY}|g; s|\${ONBOARDING_SERVICE_API_KEY}|${ONBOARDING_SERVICE_API_KEY}|g; s|\${PIM_S2S_API_KEY}|${PIM_S2S_API_KEY}|g; s|\${PIM_CATALOG_S2S_API_KEY}|${PIM_CATALOG_S2S_API_KEY}|g" \
   /opt/kong/kong.yml.template > /tmp/kong_intermediate.yml
 
 # Step 2: Replace CORS origins placeholder with YAML list from comma-separated env var

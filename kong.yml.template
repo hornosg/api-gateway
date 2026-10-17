@@ -15,9 +15,10 @@ services:
   # FIX 2026-06-19: antes este route colgaba de iam-service (url SIN path) con
   # strip_path:true → Kong strippeaba el path COMPLETO y el upstream recibía "POST /"
   # (→ "Authorization header required": login ROTO por el gateway). Lo introdujo #233 al
-  # scopear el rate-limit sin seguir el patrón documentado de pim-s2s-reclassify-service.
-  # AHORA es un SERVICE dedicado con la URL upstream COMPLETA (mismo patrón, ver líneas
-  # de pim-s2s-reclassify): strip_path:true deja el upstream EXACTO /api/v1/auth/login.
+  # scopear el rate-limit sin seguir el patrón documentado de service dedicado con URL
+  # upstream completa (ver catalog-s2s-service abajo).
+  # AHORA es un SERVICE dedicado con la URL upstream COMPLETA (mismo patrón que
+  # catalog-s2s-service): strip_path:true deja el upstream EXACTO /api/v1/auth/login.
   # Al ser service propio NO hereda el jwt+acl de iam-service → login público (correcto:
   # todavía no hay token). El rate-limiting K2 (5/min, limit_by:ip, policy:local) queda igual.
   - name: iam-auth-login-service
@@ -67,80 +68,6 @@ services:
         paths:
           - /pim/
         strip_path: true
-
-  # Servicio PIM S2S (comunicación interna, API-Key auth, sin JWT)
-  - name: pim-s2s-service
-    url: http://mc-pim-service:8090/api/v1/s2s
-    connect_timeout: 60000
-    write_timeout: 60000
-    read_timeout: 60000
-    routes:
-      - name: pim-s2s-route
-        paths:
-          - /pim/api/v1/s2s/
-        strip_path: true
-        methods:
-          - POST
-          - GET
-        plugins:
-          - name: key-auth
-            config:
-              key_names:
-                - X-API-Key
-              hide_credentials: true
-          - name: acl
-            config:
-              allow:
-                - "service-internal"
-              hide_groups_header: true
-
-  # Servicio PIM S2S — Reclasificación masiva (route dedicado con rate-limit restrictivo)
-  # Mutación global pesada: UPDATE masivo sobre global_products (hasta 50k filas) + snapshot por apply.
-  # Service propio con la URL upstream completa (incluye el path /api/v1/s2s/global-products/...):
-  # así strip_path:true puede strippar el path completo del request y el upstream queda IDÉNTICO
-  # al del route genérico (pim recibe POST /api/v1/s2s/global-products/reclassify-business-types).
-  # Kong prioriza este route sobre pim-s2s-route porque su path es un prefijo más largo (match más específico).
-  - name: pim-s2s-reclassify-service
-    url: http://mc-pim-service:8090/api/v1/s2s/global-products/reclassify-business-types
-    connect_timeout: 60000
-    write_timeout: 60000
-    read_timeout: 60000
-    routes:
-      - name: pim-s2s-reclassify-route
-        paths:
-          - /pim/api/v1/s2s/global-products/reclassify-business-types
-        strip_path: true
-        methods:
-          - POST
-        plugins:
-          # Auth replicada del route genérico (NO se hereda: es otro service/route).
-          - name: key-auth
-            config:
-              key_names:
-                - X-API-Key
-              hide_credentials: true
-          - name: acl
-            config:
-              allow:
-                - "service-internal"
-              hide_groups_header: true
-          # Rate-limiting RESTRICTIVO: es una operación de operador humano, no tráfico máquina.
-          # 5/min, 30/hora: permite reintentos puntuales y una sesión de trabajo razonable,
-          # pero corta abuso/loops accidentales sobre un UPDATE de hasta 50k filas + snapshot.
-          # policy: redis (lab-redis) — primer rate-limit redis del template: el límite se comparte
-          # entre réplicas de Kong (a diferencia de policy:local), correcto para un tope global de la op.
-          - name: rate-limiting
-            config:
-              minute: 5
-              hour: 30
-              policy: redis
-              redis_host: lab-redis
-              redis_port: 6379
-              # lab-redis (redis:7-alpine) sin requirepass ni db selection: host+port alcanza.
-              # fault_tolerant: false (fail-CLOSED) — dictamen @dev-security gate L4 E24/PR-4:
-              # el rate-limit contiene daño de una mutación global destructiva (UPDATE 50k + snapshot);
-              # si redis cae, mejor 500 que permitir martillar la op sin tope. No es QoS, es contención.
-              fault_tolerant: false
 
   # Servicio Stock
   - name: stock-service
@@ -450,6 +377,465 @@ services:
         paths:
           - /catalog-service/
         strip_path: true
+
+  # =========================================================================
+  # CATALOG SERVICE — S2S (PLAT-E39 · T6c · D2/D4). Endpoint privado que PIM
+  # invoca para notificar el comando tenant "alta de producto global". NO es
+  # la misma ruta que el service admin de arriba: este route tiene un path MÁS
+  # ESPECÍFICO (`/catalog-service/api/v1/s2s/`) y Kong lo prioriza sobre el
+  # prefijo corto `/catalog-service/` (mismo mecanismo de route específico sobre
+  # route genérico). Así el S2S queda detrás de key-auth + ACL
+  # `service-internal`, nunca detrás del jwt+acl(authenticated) del service
+  # admin — un tenant con JWT válido NO puede invocarlo directo (O1, gate L4
+  # de T6a). El upstream ya incluye `/api/v1/s2s` (strip_path strippa todo el
+  # path del route).
+  # Sin `anonymous` (D4): sin API key válida de un consumer `service-internal`,
+  # Kong responde 401 en el borde.
+  # =========================================================================
+  - name: catalog-s2s-service
+    url: http://mc-catalog-service:8160/api/v1/s2s
+    connect_timeout: 60000
+    write_timeout: 60000
+    read_timeout: 60000
+    routes:
+      - name: catalog-s2s-route
+        paths:
+          - /catalog-service/api/v1/s2s/
+        strip_path: true
+        methods:
+          - POST
+        plugins:
+          - name: key-auth
+            config:
+              key_names:
+                - X-API-Key
+              hide_credentials: true
+          - name: acl
+            config:
+              allow:
+                - "service-internal"
+              hide_groups_header: true
+
+  # =========================================================================
+  # CATALOG PUBLIC SERVICE (PLAT-E39 · T6d · D3.3). Service SEPARADO del admin
+  # (`catalog-service`), mismo upstream `mc-catalog-service:8160`. SIN jwt, SIN acl, SIN
+  # consumer: el catálogo público es anónimo. No existe `catalog-public-consumer` ni
+  # `anonymous-consumer` en este service — a diferencia de las rutas públicas de pim, acá no
+  # hay fallback anónimo compartido (D3.3 punto 1). La seguridad la dan:
+  #   - Dos routes regex ANCLADAS y `methods: ["GET"]` — POST/PATCH/DELETE ni matchean.
+  #   - El servicio: el grupo público sólo registra esos dos GET; el resto sin system_admin
+  #     cae al `platformGroup` y se rechaza 401 (fail-closed).
+  #   - rate-limiting con `policy: redis` y `limit_by: ip` (D3.3 punto 5; `local` no vale
+  #     multi-nodo). En despliegue, `mc-catalog-service` no publica puerto: sólo Kong lo
+  #     alcanza por red interna.
+  # El service admin (`catalog-service`) conserva jwt+acl(authenticated) para TODAS sus
+  # rutas, incluidas las de lectura admin — la pública NO comparte esa surface.
+  # =========================================================================
+  - name: catalog-public-service
+    url: http://mc-catalog-service:8160
+    connect_timeout: 60000
+    write_timeout: 60000
+    read_timeout: 60000
+    routes:
+      # GET /api/v1/public/global-catalog/products (list). Regex con `~/` (no `~^`: Kong 3.4
+      # rechaza `~^`, exige `~` seguido de `/`) y anclaje `$` al final. Comillado en YAML porque
+      # `~` es token de null — sin comillas Kong lo parsea como fixed path y falla.
+      #
+      # Aislamiento D3.3 sin `^` de inicio: el end-anchor `$` + `methods:[GET]` acota la forma
+      # (no matchea `/products/<id>` ni POST/PATCH/DELETE). El detalle abajo usa `[^/]+$` = un
+      # solo segmento, así que `/products/a/b` no matchea. Ninguna ruta admin/S2S contiene el
+      # substring `/public/global-catalog/products` (el admin es `/api/v1/global-catalog/...`
+      # sin `/public`), así que el matcheo por substring (PCRE sin `^`) no puede escalar a la
+      # superficie autenticada. El handler público es anónimo y sólo sirve verificados, así
+      # que un path "alargado" que colisione no gana privilegios.
+      - name: catalog-public-global-products-list
+        paths:
+          - "~/api/v1/public/global-catalog/products$"
+        strip_path: false
+        methods:
+          - GET
+      # GET /api/v1/public/global-catalog/products/<id> (detail). `[^/]+` matchea exactamente un
+      # segmento: no matchea `/products` (sin id) ni `/products/a/b` (dos segmentos).
+      - name: catalog-public-global-product-detail
+        paths:
+          - "~/api/v1/public/global-catalog/products/[^/]+$"
+        strip_path: false
+        methods:
+          - GET
+      # GET /api/v1/public/global-catalog/brands (PLAT-E39 T11-R.2 / T6d6, D3.3 + D15). Listado
+      # anónimo de las marcas DISTINCT de una categoría (`?category=<id>` de marketplace_categories;
+      # el servicio traduce id→slug, D15). Cubre la intención semántica de
+      # `CreateTenantBrandsFromGlobalProducts` de pim vía `category_slug` (D14). Mismo service
+      # público que el catálogo de productos — NO crea service nuevo. Regex anclado con `$` +
+      # `methods:[GET]`: POST/PATCH/DELETE ni matchean, y `/brands/<id>` no matchea (no hay
+      # detalle público de marca). El aislamiento D3.3 lo da el end-anchor `$` + GET + el handler
+      # del servicio (sólo GET, allowlist: sólo nombres de marca, predicado `is_active+is_verified`
+      # always-on); ninguna ruta admin/S2S contiene el substring `/public/global-catalog/brands`
+      # (el admin es `/api/v1/global-catalog/...` sin `/public`), así que el matcheo por substring
+      # (PCRE sin `^`) no escala a la superficie autenticada.
+      - name: catalog-public-global-brands-list
+        paths:
+          - "~/api/v1/public/global-catalog/brands$"
+        strip_path: false
+        methods:
+          - GET
+      # GET /api/v1/public/marketplace/categories (PLAT-E39 T8c1, D7 — espejo D3.3 de T6d2).
+      # Árbol de la taxonomía pública (`marketplace_categories`, tabla de plataforma sin tenant_id).
+      # Mismo service público que el catálogo de productos — NO crea service nuevo (D7). Regex
+      # anclado con `$` + `methods:[GET]`: POST/PATCH/DELETE ni matchean, y `/categories/<id>` no
+      # matchea (no hay route de detalle público: T7 no relevó consumidor). El aislamiento D3.3
+      # lo da el end-anchor `$` + GET + el handler del servicio (sólo GET, allowlist D7, filtro
+      # `is_active=true`); ninguna ruta admin/S2S contiene el substring
+      # `/public/marketplace/categories` (el admin es `/api/v1/marketplace/categories` sin
+      # `/public`), así que el matcheo por substring (PCRE sin `^`) no escala a la superficie
+      # autenticada.
+      - name: catalog-public-categories-list
+        paths:
+          - "~/api/v1/public/marketplace/categories$"
+        strip_path: false
+        methods:
+          - GET
+      # GET /api/v1/public/business-types (PLAT-E39 T6d4, D11 — espejo D3.3 de T6d2/T8c1).
+      # Listado anónimo de business_types activos (`business_types`, tabla de plataforma sin
+      # tenant_id). Mismo service público que el catálogo — NO crea service nuevo (D11).
+      # Regex anclado con `$` + `methods:[GET]`: POST/PATCH/DELETE ni matchean, y
+      # `/business-types/<id>` no matchea (no hay detalle público de business_types: el
+      # contrato D11 sólo lista). El aislamiento D3.3 lo da el end-anchor `$` + GET + el
+      # handler del servicio (sólo GET, allowlist D11, filtro `is_active=true`); ninguna ruta
+      # admin/S2S contiene el substring `/public/business-types` (el admin es
+      # `/api/v1/business-types` sin `/public`), así que el matcheo por substring (PCRE sin
+      # `^`) no escala a la superficie autenticada.
+      - name: catalog-public-business-types-list
+        paths:
+          - "~/api/v1/public/business-types$"
+        strip_path: false
+        methods:
+          - GET
+      # GET /api/v1/public/business-type-templates (PLAT-E39 T6d4, D11). Listado anónimo de
+      # business_type_templates activos filtrados por `?business_type=<slug|id>`. Sin
+      # `business_type` el servicio responde 400 (no expone el catálogo entero a un consumer
+      # anónimo). Regex anclado con `$` + GET: el query string no abre una route nueva (Kong
+      # rutea por path), y `/business-type-templates/<id>` (detalle) matchea la route de
+      # abajo, no ésta. Misma postura D3.3 que el resto de la familia pública.
+      - name: catalog-public-business-type-templates-list
+        paths:
+          - "~/api/v1/public/business-type-templates$"
+        strip_path: false
+        methods:
+          - GET
+      # GET /api/v1/public/business-type-templates/<id> (PLAT-E39 T6d4, D11). Detalle
+      # anónimo de un template activo: DTO allowlist D11 con categories/attributes/
+      # product_template_details (refs global_product_id, pim resuelve vía T6d3)/brands.
+      # `[^/]+` matchea exactamente un segmento: no matchea `/business-type-templates` (sin
+      # id, cae a la route de listado de arriba) ni `/business-type-templates/a/b`. 404 para
+      # inexistente O inactivo (sin fuga). Mismo aislamiento D3.3: end-anchor `$` + GET +
+      # handler, sin `^` de inicio, sin colisión con la surface admin (`/api/v1/business-
+      # type-templates` sin `/public`).
+      - name: catalog-public-business-type-template-detail
+        paths:
+          - "~/api/v1/public/business-type-templates/[^/]+$"
+        strip_path: false
+        methods:
+          - GET
+      # GET /api/v1/public/global-catalog/templates/<id>/products (PLAT-E39 T6d8, D3.3). Surtido
+      # de un template ya rankeado y limitado server-side — reemplaza el patrón "pedir N ids y
+      # truncar client-side" que bloqueaba T11b (techo de ~215 ids del batch by-IDs; ver
+      # escalación 2026-08-05_PLAT-E39-T11b-gate-cap-batch-dictamenes.md). Input acotado de raíz:
+      # un `template_id` + `limit` (default 30, techo 1000 server-side — subido de 100 en T11b
+      # para cubrir el set completo de un template, máximo real 849 refs; el cap lo enforcea el
+      # SERVICIO, no Kong). Ese relax es el único cambio de guard D3.3 de T11b y está aprobado en
+      # el gate L4 del 2026-08-05 (query acotada por template, rate-limit Redis por IP, 400 duro
+      # sin clamping). Regex anclado con `$` + `methods:[GET]`: POST/PATCH/DELETE ni matchean y
+      # `/templates/<id>` (sin /products) no matchea. El aislamiento D3.3 lo da el end-anchor `$`
+      # + GET + el handler del servicio (sólo GET, allowlist D3.3 intacto); ninguna ruta
+      # admin/S2S contiene el substring `/public/global-catalog/templates` (el admin es
+      # `/api/v1/global-catalog/...` sin `/public`), así que el matcheo por substring (PCRE sin
+      # `^`) no escala a la superficie autenticada. El rate-limit Redis por IP del service cubre
+      # la ruta (SEC-T06).
+      - name: catalog-public-template-products
+        paths:
+          - "~/api/v1/public/global-catalog/templates/[^/]+/products$"
+        strip_path: false
+        methods:
+          - GET
+
+  # =========================================================================
+  # CATALOG FLIP — ETAPA B / PLAT-E39 · T8a · D1 (flip de Kong, GET-only).
+  # Re-apunta los paths de plataforma que `mc_admin` sirve vía `/pim/` desde
+  # pim hacia catalog-service, SIN cambiar los paths externos (cero churn de
+  # consumidores: mc_admin sigue llamando `/pim/api/v1/...`, Kong decide el
+  # upstream). Cada familia es un `service` dedicado con la URL upstream ya
+  # incluyendo el handler path (`/api/v1/<familia>`), mismo patrón de service
+  # dedicado con URL upstream completa (ver catalog-s2s-service): así
+  # `strip_path: true` strippa el path externo completo y el upstream recibe
+  # exactamente el handler.
+  #
+  # Por qué GET-only (decisión de scope, ver escalación T8a):
+  #   - catalog-service es READ-ONLY para brand/category/business-types/
+  #     business-type-templates (T2–T5: sólo GET; `catalog_ro` no escribe).
+  #     Un flip total (POST/PUT/DELETE incluido) mandaría las mutaciones de
+  #     mc_admin a catalog-service → 404 y rompería la gestión de
+  #     brands/categories/business_types. Las mutaciones quedan en pim vía la
+  #     ruta catch-all `/pim/` (method no-GET no matchea estos routes).
+  #   - global-catalog: catalog-service sólo sirve `/global-catalog/products`
+  #     (list+detail, T6d1; escritura T6a). NO sirve `/global-catalog/business-
+  #     types` (sigue en pim). Por eso el route acá es `/global-catalog/products`
+  #     (acotado), no el prefijo `global-catalog*`: un prefijo dejaría caer
+  #     `/global-catalog/business-types` en catalog-service → 404.
+  #   - Las escrituras de global-catalog viajan por el BFF (`/admin/`, T8b) o
+  #     S2S (T6c), no por `/pim/`: el flip GET-only no las afecta.
+  #
+  # D1 — postura de auth IDÉNTICA a la ruta pim vigente (verificado por diff
+  # lado a lado; cualquier divergencia es bloqueante). pim sirve estos paths
+  # con jwt (HS256 iss=iam-service, exp, con fallback anónimo compartido) +
+  # acl (`allow: authenticated, public-routes`) + rate-limiting (600/min,
+  # 10000/hora, local) a nivel SERVICE. Estos routes replican la MISMA
+  # verificación jwt+acl, a nivel route (cada flip service tiene un solo route;
+  # plugins route-level lo mantienen autocontenido y reversible — borrar el
+  # bloque revierte el flip), PERO **sin** fallback anónimo ni `public-routes`
+  # (T17 · D3.3: jamás el fallback anónimo compartido en rutas admin).
+  # Sin JWT válido → 401 del plugin jwt en el borde (fail-closed, no llega al
+  # upstream); con JWT autenticado → pasa a catalog-service, que deriva el rol
+  # del claim verificado in-process (T1c/D3.1) → 200 system_admin / 403 tenant.
+  # El gate L4 re-gatea este diff contra la ruta pim pre-flip.
+  # =========================================================================
+
+  # Flip 1 — marketplace-brands (GET list + detail). mc_admin:
+  #   brands_api.dart → GET /pim/api/v1/marketplace-brands[/:id]
+  - name: catalog-flip-brands
+    url: http://mc-catalog-service:8160/api/v1/marketplace-brands
+    connect_timeout: 60000
+    write_timeout: 60000
+    read_timeout: 60000
+    routes:
+      - name: catalog-flip-brands-route
+        paths:
+          - /pim/api/v1/marketplace-brands
+        strip_path: true
+        methods:
+          - GET
+        plugins:
+          - name: jwt
+            config:
+              header_names:
+                - Authorization
+              claims_to_verify:
+                - exp
+              key_claim_name: iss
+              secret_is_base64: false
+              run_on_preflight: false
+              uri_param_names:
+                - jwt
+          - name: acl
+            config:
+              allow:
+                - "authenticated"
+              hide_groups_header: true
+          - name: rate-limiting
+            config:
+              minute: 600
+              hour: 10000
+              policy: local
+
+  # Flip 2 — marketplace/categories (GET list + tree + detail). mc_admin:
+  #   categories_api.dart → GET /pim/api/v1/marketplace/categories[/tree|/:id]
+  - name: catalog-flip-categories
+    url: http://mc-catalog-service:8160/api/v1/marketplace/categories
+    connect_timeout: 60000
+    write_timeout: 60000
+    read_timeout: 60000
+    routes:
+      - name: catalog-flip-categories-route
+        paths:
+          - /pim/api/v1/marketplace/categories
+        strip_path: true
+        methods:
+          - GET
+        plugins:
+          - name: jwt
+            config:
+              header_names:
+                - Authorization
+              claims_to_verify:
+                - exp
+              key_claim_name: iss
+              secret_is_base64: false
+              run_on_preflight: false
+              uri_param_names:
+                - jwt
+          - name: acl
+            config:
+              allow:
+                - "authenticated"
+              hide_groups_header: true
+          - name: rate-limiting
+            config:
+              minute: 600
+              hour: 10000
+              policy: local
+
+  # Flip 3 — business-types (GET list + detail). mc_admin:
+  #   business_types_api.dart → GET /pim/api/v1/business-types[/:id]
+  #   (el POST /reorder queda en pim: method no-GET no matchea este route).
+  #   Ojo: `/pim/api/v1/business-types` NO es prefijo de `/pim/api/v1/business-
+  #   type-templates` (divergen en `s` vs `-` tras `business-type`), sin colisión.
+  - name: catalog-flip-business-types
+    url: http://mc-catalog-service:8160/api/v1/business-types
+    connect_timeout: 60000
+    write_timeout: 60000
+    read_timeout: 60000
+    routes:
+      - name: catalog-flip-business-types-route
+        paths:
+          - /pim/api/v1/business-types
+        strip_path: true
+        methods:
+          - GET
+        plugins:
+          - name: jwt
+            config:
+              header_names:
+                - Authorization
+              claims_to_verify:
+                - exp
+              key_claim_name: iss
+              secret_is_base64: false
+              run_on_preflight: false
+              uri_param_names:
+                - jwt
+          - name: acl
+            config:
+              allow:
+                - "authenticated"
+              hide_groups_header: true
+          - name: rate-limiting
+            config:
+              minute: 600
+              hour: 10000
+              policy: local
+
+  # Flip 4 — business-type-templates (GET list + detail). mc_admin:
+  #   business_types_api.dart → GET /pim/api/v1/business-type-templates[/:id]
+  - name: catalog-flip-business-type-templates
+    url: http://mc-catalog-service:8160/api/v1/business-type-templates
+    connect_timeout: 60000
+    write_timeout: 60000
+    read_timeout: 60000
+    routes:
+      - name: catalog-flip-business-type-templates-route
+        paths:
+          - /pim/api/v1/business-type-templates
+        strip_path: true
+        methods:
+          - GET
+        plugins:
+          - name: jwt
+            config:
+              header_names:
+                - Authorization
+              claims_to_verify:
+                - exp
+              key_claim_name: iss
+              secret_is_base64: false
+              run_on_preflight: false
+              uri_param_names:
+                - jwt
+          - name: acl
+            config:
+              allow:
+                - "authenticated"
+              hide_groups_header: true
+          - name: rate-limiting
+            config:
+              minute: 600
+              hour: 10000
+              policy: local
+
+  # Flip 5 — global-catalog/products (GET list + detail, acotado a /products).
+  # mc_admin: global_products_api.dart → GET /pim/api/v1/global-catalog/products/:id
+  # (la list y bulk-verify van por el BFF `/admin/`, no por `/pim/`). El route
+  # es `/global-catalog/products` (NO `global-catalog`): `/global-catalog/business-types`
+  # no lo sirve catalog-service y debe seguir cayendo al catch-all `/pim/` → pim.
+  - name: catalog-flip-global-catalog-products
+    url: http://mc-catalog-service:8160/api/v1/global-catalog/products
+    connect_timeout: 60000
+    write_timeout: 60000
+    read_timeout: 60000
+    routes:
+      - name: catalog-flip-global-catalog-products-route
+        paths:
+          - /pim/api/v1/global-catalog/products
+        strip_path: true
+        methods:
+          - GET
+        plugins:
+          - name: jwt
+            config:
+              header_names:
+                - Authorization
+              claims_to_verify:
+                - exp
+              key_claim_name: iss
+              secret_is_base64: false
+              run_on_preflight: false
+              uri_param_names:
+                - jwt
+          - name: acl
+            config:
+              allow:
+                - "authenticated"
+              hide_groups_header: true
+          - name: rate-limiting
+            config:
+              minute: 600
+              hour: 10000
+              policy: local
+
+  # =========================================================================
+  # WHATSAPP-AGENT (WA-E01 · Kong) — rutas del proyecto en el borde compartido.
+  # Registradas como FUNDACIÓN: los upstreams todavía no son alcanzables y eso
+  # es intencional — Kong DB-less resuelve el upstream por-request, así que
+  # mientras el contenedor no exista la ruta es config inerte (Kong responde
+  # 503). Así WA-E03/WA-E12 no vuelven a tocar infra compartida.
+  #   - wa-webhooks: PÚBLICO (sin jwt ni acl): el webhook de Kapso no viaja con
+  #     token; la autenticidad la enforcea el propio gateway con la firma HMAC
+  #     del payload (RULE-05 / WA-E03), verificada IN-APP. Rate-limit por IP
+  #     en el borde, como toda ruta pública del lab (patrón iam-auth-login).
+  #   - Service con URL upstream COMPLETA + strip_path:true → el upstream
+  #     recibe EXACTO `/api/v1/webhooks/kapso`. Es el patrón del fix
+  #     2026-06-19: service con URL sin path + strip_path manda "POST /" y
+  #     rompe el handler (ver iam-auth-login-service arriba).
+  #   - wa-dashboard: upstream `wa-web` aún no existe (lo crea WA-E17/E12);
+  #     auth de sesión contra IAM la definen esas épicas — SIN jwt por ahora.
+  #   - CAVEAT E09.0a: el gateway fuerza BIND_HOST loopback (config.go) y su
+  #     contenedor está bajo profile "blocked-until-e09a3" → Kong no puede
+  #     alcanzarlo hasta que esa contención se levante (E09.0a.3).
+  # =========================================================================
+  - name: wa-messaging-gateway
+    url: http://wa-messaging-gateway:8101/api/v1/webhooks/kapso
+    routes:
+      - name: wa-webhooks
+        paths:
+          - /wa/webhooks
+        strip_path: true
+        methods:
+          - POST
+        plugins:
+          - name: rate-limiting
+            config:
+              minute: 300
+              hour: 3000
+              limit_by: ip
+              policy: local
+
+  - name: wa-web
+    url: http://wa-web:3001
+    routes:
+      - name: wa-dashboard
+        paths:
+          - /wa/dashboard
+        strip_path: true
+
 consumers:
   # Consumer para JWT autenticado
   - username: iam-service-consumer
@@ -514,6 +900,19 @@ consumers:
     custom_id: pim-s2s
     keyauth_credentials:
       - key: "${PIM_S2S_API_KEY}"
+    acls:
+      - group: "service-internal"
+
+  # Consumer para PIM -> catalog-service S2S (PLAT-E39 · T6c · D2/D4). Identidad
+  # DEDICADA y distinta de pim-s2s-consumer: la key de pim-s2s-consumer la tienen
+  # otros servicios que llaman a pim, y reusarla saliente daría creep de privilegios
+  # (esas mismas keys podrían entonces llamar a catalog-service). Esta key sólo la
+  # tiene pim, sólo para invocar el endpoint S2S del comando tenant, y sólo queda
+  # en vault/env (D4: por-consumer, rotable, sin fallback horneado).
+  - username: pim-catalog-s2s-consumer
+    custom_id: pim-catalog-s2s
+    keyauth_credentials:
+      - key: "${PIM_CATALOG_S2S_API_KEY}"
     acls:
       - group: "service-internal"
 
@@ -1041,6 +1440,28 @@ plugins:
       minute: 60
       hour: 1000
       policy: local
+
+  # =========================================================================
+  # CATALOG PUBLIC SERVICE (PLAT-E39 · T6d · D3.3). Rate limit por IP con policy: redis
+  # (no `local`: el catálogo público tiene que respetar el límite multi-nodo). No hay jwt
+  # ni acl en este service: la única protección de borde del service público es éste
+  # rate-limit + el anclaje de los dos routes regex GET.
+  # =========================================================================
+  - name: rate-limiting
+    service: catalog-public-service
+    config:
+      minute: 30
+      hour: 1000
+      limit_by: ip
+      policy: redis
+      redis_host: lab-redis
+      redis_port: 6379
+      # lab-redis sin requirepass (redis:7-alpine) — host+port alcanza, igual que el rate-limit
+      # redis de E24 línea 137. fault_tolerant: true (fail-OPEN, default de Kong): a diferencia
+      # de la mutación destructiva de E24, éste es un GET público de catálogo — si redis cae,
+      # mejor servir el catálogo sin tope que 500 a un consumer anónimo. No es contención de
+      # daño, es QoS de un read público.
+      fault_tolerant: true
 
   # Plugin Key Auth para AI Gateway -> PIM
   - name: key-auth
