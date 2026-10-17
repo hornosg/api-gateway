@@ -1117,20 +1117,12 @@ plugins:
       uri_param_names:
         - jwt
 
-  # Plugin JWT para el servicio Onboarding (público - no requiere autenticación)
-  - name: jwt
-    service: onboarding-service
-    config:
-      header_names:
-        - Authorization
-      claims_to_verify:
-        - exp
-      key_claim_name: iss
-      secret_is_base64: false
-      run_on_preflight: false
-      uri_param_names:
-        - jwt
-      anonymous: "anonymous-consumer"
+  # ACC-E03 T5d: onboarding-service es PÚBLICO EXPLÍCITO (flujo de alta: ninguna de sus rutas
+  # exige token y el servicio excluye /api/v1/onboarding/* de TenantValidation). Se retiraron su
+  # `jwt` con `anonymous` y su `acl` con `public-routes`: no protegían nada y le reenviaban al
+  # upstream tokens falsificados como si Kong los hubiera mirado. Control compensatorio: el
+  # rate-limiting del service. Si alguna ruta de onboarding pasa a exigir sesión, va a un
+  # service propio con borde estricto (jwt sin anonymous + acl authenticated), no acá.
 
   # Plugin JWT para AI Gateway
   - name: jwt
@@ -1269,21 +1261,27 @@ plugins:
         - "authenticated"
         - "public-routes"
       hide_groups_header: true
+
+  # ACC-E03 T5d: borde estricto para ai-gateway SIN romper el OR «JWT o X-API-Key».
+  # jwt (prioridad 1450) corre antes que key-auth (1250); por eso ambos llevan `anonymous`:
+  # un caller sólo-API-key no trae JWT, jwt lo deja anónimo y key-auth lo identifica. Lo que
+  # llega acá todavía como `anonymous-consumer` es quien no presentó NINGUNA credencial válida
+  # (sin token, `alg:none`, otra clave, API key inválida) → 401 en el borde, sin upstream.
+  # Por qué request-termination y no sacar `public-routes` del acl: el acl (950) corre antes y
+  # respondería 403; el 401 es la semántica correcta para «credencial ausente o inválida».
+  # tests/borde-anonimo-t5d-config.py traba este bloque (quitarlo hace fallar el test).
+  - name: request-termination
+    service: ai-gateway-service
+    consumer: anonymous-consumer
+    config:
+      status_code: 401
+      message: "Unauthorized"
   
   # Plugin ACL para Webdata Service
   - name: acl
     service: webdata-service
     config:
       allow:
-        - "authenticated"
-      hide_groups_header: true
-
-  # Plugin ACL para el servicio Onboarding (público)
-  - name: acl
-    service: onboarding-service
-    config:
-      allow:
-        - "public-routes"
         - "authenticated"
       hide_groups_header: true
 
@@ -1398,12 +1396,20 @@ plugins:
       policy: local
 
   # Plugin Rate Limiting para Onboarding
+  # Ruta pública explícita (ACC-E03.T5d, review L4 C1): por IP y redis, igual que
+  # catalog-public-service. `limit_by` explícito: el default (consumer) agruparía a todos los
+  # anónimos en un único bucket. fault_tolerant (fail-open, default) para no cortar el alta si
+  # redis cae. Tras un balanceador sin KONG_TRUSTED_IPS todos comparten la IP del balanceador.
   - name: rate-limiting
     service: onboarding-service
     config:
       minute: 100
       hour: 2000
-      policy: local
+      limit_by: ip
+      policy: redis
+      redis_host: lab-redis
+      redis_port: 6379
+      fault_tolerant: true
 
   # Plugin Rate Limiting para Notification
   - name: rate-limiting

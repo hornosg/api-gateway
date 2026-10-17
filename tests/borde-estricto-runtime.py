@@ -79,10 +79,12 @@ NOT_WIDENED = [
 failures = []
 
 
-def call(method, path, token=None, body=None, raw_auth=None):
+def call(method, path, token=None, body=None, raw_auth=None, headers=None):
     data = json.dumps(body).encode() if body is not None else (b"{}" if method != "GET" else None)
     req = urllib.request.Request(KONG + path, data=data, method=method)
     req.add_header("Content-Type", "application/json")
+    for k, v in (headers or {}).items():  # T5d: X-API-Key
+        req.add_header(k, v)
     if raw_auth is not None:
         req.add_header("Authorization", raw_auth)
     elif token:
