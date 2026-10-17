@@ -838,11 +838,18 @@ services:
 
 consumers:
   # Consumer para JWT autenticado
+  # ACC-E03 T5: el borde verifica RS256 con la pública de account-service (PEM estático por
+  # credencial — el plugin jwt OSS no descarga JWKS, ADR-003 §e). Una sola credencial keyed
+  # `iam-service` y `key_claim_name: iss` en los 20 bloques: la flota entera migra de una.
+  # Kong no admite dual en el borde (cache_key = { key } unique), así que desde este flip los
+  # access tokens HS256 vivos dan 401 acá hasta expirar (TTL 15 min). El PEM lo inyecta
+  # entrypoint.sh desde JWT_PUBLIC_KEY con la indentación del bloque.
   - username: iam-service-consumer
     jwt_secrets:
       - key: "iam-service"
-        algorithm: "HS256"
-        secret: "${JWT_SECRET}"
+        algorithm: "RS256"
+        rsa_public_key: |
+          ${JWT_PUBLIC_KEY}
     acls:
       - group: "authenticated"
 
