@@ -92,6 +92,39 @@ services:
           - /admin/
         strip_path: true
 
+  # ACC-E03 T5c (2026-10-17) — rutas PÚBLICAS del BFF, carvadas en un service dedicado.
+  # catalog-bff-service quedó con jwt SIN `anonymous` (borde estricto): un JWT inválido da 401
+  # en Kong sin llegar al upstream. Las dos únicas rutas anónimas del BFF (árbol público de
+  # categorías de marketplace, que proxean al endpoint público de catalog-service sin token)
+  # viven acá, sin jwt/ACL — mismo patrón que catalog-public-service e iam-auth-login-service
+  # (service propio con URL upstream completa → no hereda el jwt del service base).
+  # Regex anclado con `$` + `methods:[GET]`: sólo `/categories` y `/categories/tree`; nada
+  # más del BFF (ni `/admin/`, ni POST/PUT, ni `/categories/<id>`) matchea.
+  - name: catalog-bff-public-service
+    url: http://mc-catalog-bff-service:8085
+    routes:
+      - name: catalog-bff-public-categories-route
+        paths:
+          - "~/catalog(/api/v1/marketplace/categories(?:/tree)?)$"
+        strip_path: false
+        methods:
+          - GET
+        plugins:
+          - name: request-transformer
+            config:
+              replace:
+                uri: "$(uri_captures[1])"
+          # Mismo límite que catalog-public-service (security T5c O2): ruta anónima = por IP, redis.
+          - name: rate-limiting
+            config:
+              minute: 30
+              hour: 1000
+              limit_by: ip
+              policy: redis
+              redis_host: lab-redis
+              redis_port: 6379
+              fault_tolerant: true
+
   # Servicio Sales - HITO v0.5 (HTTP Routes Alignment)
   - name: sales-service
     url: http://sales-service:8080
@@ -971,7 +1004,6 @@ plugins:
       run_on_preflight: false
       uri_param_names:
         - jwt
-      anonymous: "anonymous-consumer"
 
   # Plugin JWT para el servicio PIM
   - name: jwt
@@ -986,7 +1018,6 @@ plugins:
       run_on_preflight: false
       uri_param_names:
         - jwt
-      anonymous: "anonymous-consumer"
 
   # Plugin JWT para el servicio Stock
   - name: jwt
@@ -1001,7 +1032,6 @@ plugins:
       run_on_preflight: false
       uri_param_names:
         - jwt
-      anonymous: "anonymous-consumer"
 
   # Plugin JWT para el servicio Catalog BFF
   - name: jwt
@@ -1016,7 +1046,6 @@ plugins:
       run_on_preflight: false
       uri_param_names:
         - jwt
-      anonymous: "anonymous-consumer"
 
   # Plugin JWT para el servicio Order - HITO 3.0
   - name: jwt
@@ -1031,7 +1060,6 @@ plugins:
       run_on_preflight: false
       uri_param_names:
         - jwt
-      anonymous: "anonymous-consumer"
 
   # Plugin JWT para Customer Service
   - name: jwt
@@ -1046,7 +1074,6 @@ plugins:
       run_on_preflight: false
       uri_param_names:
         - jwt
-      anonymous: "anonymous-consumer"
 
   # Plugin JWT para Ledger Service (PLAT-E02)
   - name: jwt
@@ -1061,7 +1088,6 @@ plugins:
       run_on_preflight: false
       uri_param_names:
         - jwt
-      anonymous: "anonymous-consumer"
 
   # Plugin JWT para Payment Method Service
   - name: jwt
@@ -1076,7 +1102,6 @@ plugins:
       run_on_preflight: false
       uri_param_names:
         - jwt
-      anonymous: "anonymous-consumer"
 
   # Plugin JWT para el servicio Marketplace
   - name: jwt
@@ -1091,7 +1116,6 @@ plugins:
       run_on_preflight: false
       uri_param_names:
         - jwt
-      anonymous: "anonymous-consumer"
 
   # Plugin JWT para el servicio Onboarding (público - no requiere autenticación)
   - name: jwt
@@ -1136,7 +1160,6 @@ plugins:
       run_on_preflight: false
       uri_param_names:
         - jwt
-      anonymous: "anonymous-consumer"
 
   # Plugin JWT para el servicio Notification
   - name: jwt
@@ -1151,7 +1174,6 @@ plugins:
       run_on_preflight: false
       uri_param_names:
         - jwt
-      anonymous: "anonymous-consumer"
 
   # Plugin JWT para el servicio Tenant
   - name: jwt
@@ -1166,14 +1188,12 @@ plugins:
       run_on_preflight: false
       uri_param_names:
         - jwt
-      anonymous: "anonymous-consumer"
 
   # Plugin ACL para control de acceso
   - name: acl
     service: iam-service
     config:
       allow:
-        - "public-routes"
         - "authenticated"
       hide_groups_header: true
 
@@ -1183,7 +1203,6 @@ plugins:
     config:
       allow:
         - "authenticated"
-        - "public-routes"
       hide_groups_header: true
 
   # Plugin ACL para el servicio Stock
@@ -1192,7 +1211,6 @@ plugins:
     config:
       allow:
         - "authenticated"
-        - "public-routes"
       hide_groups_header: true
 
   # Plugin ACL para el servicio Catalog BFF
@@ -1201,7 +1219,6 @@ plugins:
     config:
       allow:
         - "authenticated"
-        - "public-routes"
       hide_groups_header: true
 
   # Plugin ACL para el servicio Order - HITO 3.0
@@ -1210,7 +1227,6 @@ plugins:
     config:
       allow:
         - "authenticated"
-        - "public-routes"
       hide_groups_header: true
 
   # Plugin ACL para Customer Service
@@ -1219,7 +1235,6 @@ plugins:
     config:
       allow:
         - "authenticated"
-        - "public-routes"
       hide_groups_header: true
 
   # Plugin ACL para Ledger Service (PLAT-E02)
@@ -1228,7 +1243,6 @@ plugins:
     config:
       allow:
         - "authenticated"
-        - "public-routes"
       hide_groups_header: true
 
   # Plugin ACL para Payment Method Service
@@ -1237,7 +1251,6 @@ plugins:
     config:
       allow:
         - "authenticated"
-        - "public-routes"
       hide_groups_header: true
 
   # Plugin ACL para el servicio Marketplace
@@ -1246,7 +1259,6 @@ plugins:
     config:
       allow:
         - "authenticated" 
-        - "public-routes"
       hide_groups_header: true
 
   # Plugin ACL para AI Gateway
@@ -1263,7 +1275,6 @@ plugins:
     service: webdata-service
     config:
       allow:
-        - "public-routes"
         - "authenticated"
       hide_groups_header: true
 
@@ -1282,7 +1293,6 @@ plugins:
     config:
       allow:
         - "authenticated"
-        - "public-routes"
       hide_groups_header: true
 
   # Plugin ACL para el servicio Tenant
@@ -1291,7 +1301,6 @@ plugins:
     config:
       allow:
         - "authenticated"
-        - "public-routes"
       hide_groups_header: true
 
   # Plugin Rate Limiting para IAM (endpoints generales)
