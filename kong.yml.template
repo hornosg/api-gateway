@@ -57,6 +57,28 @@ services:
               limit_by: ip
               policy: local
 
+  # ACC-E09 T2 (ADR-006 «Exposición del endpoint») — emisión del token de servicio S2S: los
+  # emisores llegan SOLO directo por lab-network, sin ruta de Kong (revisión L4 de T2, O-1: detrás
+  # de Kong todo el tráfico comparte la IP del gateway, así que el cupo pre-auth por IP de iam se
+  # agotaba para todos los emisores con un solo cliente anónimo). tests/s2s-token-config.py exige
+  # que ninguna ruta pública alcance /api/v1/s2s/token y traba el bloqueo de abajo.
+  # ACC-E09 T2 — la ruta pública /iam/ NO alcanza el endpoint de emisión: todo /iam/api/v1/s2s
+  # termina en el borde con 404, sin upstream. Más específica que el catch-all /iam/, gana el
+  # matcheo para cualquier método.
+  - name: iam-s2s-block-service
+    url: http://mc-iam-service:8080
+    routes:
+      - name: iam-s2s-block-route
+        paths:
+          - /iam/api/v1/s2s
+          - /internal/iam/api/v1/s2s
+        strip_path: false
+        plugins:
+          - name: request-termination
+            config:
+              status_code: 404
+              message: "Not Found"
+
   # Servicio PIM
   - name: pim-service
     url: http://mc-pim-service:8090
